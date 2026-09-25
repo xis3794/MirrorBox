@@ -66,6 +66,25 @@ build_libffi() {
   make install
 }
 
+# GLib hard-requires a pkg-config dependency named "iconv". bionic only exports iconv from
+# API 28 onwards, and this project links against API 24, so GNU libiconv is built statically
+# instead (small, no runtime dependency, keeps API 24 devices working).
+build_libiconv() {
+  if [[ -f "${PREFIX}/lib/libiconv.a" ]]; then
+    log "libiconv already built (cached)"
+    return 0
+  fi
+  fetch "${LIBICONV_URL}" "libiconv-${LIBICONV_VERSION}.tar.gz"
+  unpack "libiconv-${LIBICONV_VERSION}.tar.gz" "${BUILD_DIR}/libiconv"
+  cd "${BUILD_DIR}/libiconv"
+  ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
+    --disable-shared --enable-static --disable-nls \
+    > "${LOG_DIR}/libiconv-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/libiconv-configure.log" >&2; exit 1; }
+  make -j"${JOBS}" > "${LOG_DIR}/libiconv-make.log" 2>&1 || { tail -60 "${LOG_DIR}/libiconv-make.log" >&2; exit 1; }
+  make install
+  write_pc "iconv" "${LIBICONV_VERSION}" "-L\${libdir} -liconv" "-I\${includedir}"
+}
+
 # GLib needs a lot of care on bionic: meson is used (autotools is deprecated),
 # and the resulting .so files must be unversioned for Android packaging.
 build_glib() {
@@ -133,6 +152,7 @@ main() {
   build_zstd
   build_pcre2
   build_libffi
+  build_libiconv
   build_glib
   log "dependencies done"
 }

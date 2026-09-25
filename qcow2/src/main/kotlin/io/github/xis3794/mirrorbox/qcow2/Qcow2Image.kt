@@ -335,12 +335,35 @@ class Qcow2Image private constructor(
 
     private fun readAt(pos: Long, buf: ByteArray, off: Int, len: Int) {
         file.seek(pos)
-        file.readFully(buf, off, len)
+        try {
+            file.readFully(buf, off, len)
+        } catch (e: java.io.EOFException) {
+            // Tolerate sparse / truncated host files (tools like qemu-img read them as zeros too):
+            // anything beyond the physical end of the file is zero filled.
+            val fileLength = file.length()
+            val available = (fileLength - pos).coerceAtLeast(0L).toInt().coerceAtMost(len)
+            java.util.Arrays.fill(buf, off, off + len, 0)
+            if (available > 0) {
+                file.seek(pos)
+                file.readFully(buf, off, available)
+            }
+        }
     }
 
     private fun writeAt(pos: Long, buf: ByteArray, off: Int, len: Int) {
         file.seek(pos)
         file.write(buf, off, len)
+    }
+
+    /**
+     * Host clusters are allocated as whole units: partial writes must still make the file large
+     * enough for the entire cluster, otherwise readers (including QEMU) see a short file.
+     */
+    private fun ensureClusterExists(clusterIndex: Long) {
+        val needed = (clusterIndex + 1L) * clusterSize
+        if (file.length() < needed) {
+            file.setLength(needed)
+        }
     }
 
     private fun loadMetadata() {
@@ -776,6 +799,7 @@ class Qcow2Image private constructor(
         while (idx < limit) {
             if (refcountOf(idx) == 0L) {
                 setRefcount(idx, 1L)
+                ensureClusterExists(idx)
                 allocCursor = idx + 1
                 return idx
             }

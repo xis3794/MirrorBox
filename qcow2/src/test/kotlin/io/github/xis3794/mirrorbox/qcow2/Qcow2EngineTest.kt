@@ -153,6 +153,63 @@ val l2 = img.l2TableEntries(0L)!!
     }
 
     @Test
+    fun partialWritesExtendTheHostFileToWholeClusters() {
+        // Regression: a partial write into a fresh cluster used to leave the host file shorter than
+        // the cluster it references (qemu tolerates short files, our reader must too — but we also
+        // make sure we never produce one).
+        val f = tempImage()
+        try {
+            Qcow2Image.create(f, 8L * 1024 * 1024).use { img ->
+                img.write(12345L, pattern(200_000))
+                img.flush()
+
+                val l2 = img.l2TableEntries(0L)!!
+                var referenced = 0
+                for (entry in l2) {
+                    if (entry == 0L) continue
+                    val offset = entry and 0x00fffffffffffe00L
+                    referenced++
+                    assertTrue(
+                        offset + img.clusterSize <= f.length(),
+                        "cluster at $offset (end ${offset + img.clusterSize}) must exist in the host file (${f.length()})",
+                    )
+                }
+                assertTrue(referenced >= 2, "expected several referenced clusters, got $referenced")
+
+                // Reading the whole virtual disk must never throw.
+                val readBack = img.readBytes(12_000L, 300_000)
+                assertEquals(pattern(200_000)[8_000].toInt(), readBack[8_000 - (12_000 - 12_345)].toInt())
+            }
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun readsTolerateTruncatedHostFiles() {
+        val f = tempImage()
+        try {
+            Qcow2Image.create(f, 8L * 1024 * 1024).use { img ->
+                img.write(0L, pattern(65536))
+                img.flush()
+            }
+            // Simulate an image whose data region is physically shorter than the cluster it maps
+            // (qemu-img reads those bytes as zeros; so must we).
+            java.io.RandomAccessFile(f, "rw").use { raf -> raf.setLength(70_000L) }
+            Qcow2Image.open(f).use { img ->
+                // Metadata itself is gone beyond the physical end, so the whole disk reads as zeros —
+                // the important part is that this never throws.
+                val data = img.readBytes(0L, 65536)
+                assertTrue(data.all { it.toInt() == 0 }, "bytes beyond the physical end must read as zero")
+                val tail = img.readBytes(img.virtualSize - 1024L, 1024)
+                assertTrue(tail.all { it.toInt() == 0 })
+            }
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
     fun rejectsInvalidImages() {
         val f = tempImage()
         try {

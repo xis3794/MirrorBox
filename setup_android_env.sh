@@ -649,3 +649,34 @@ if [ -x "$ANDROID_HOME/build-tools/35.0.0/aapt2" ]; then
   fi
   log "aapt2 override written to $GRADLE_PROPS"
 fi
+
+# >>> mirrorbox wrapper distribution handling >>>
+# The committed gradle-wrapper.properties must always point at the official URL (CI downloads it),
+# while local setups reuse the mirror-downloaded zip by installing it into the wrapper dists cache.
+WRAPPER_PROPS="gradle/wrapper/gradle-wrapper.properties"
+GRADLE_URL="https://services.gradle.org/distributions/gradle-9.1.0-bin.zip"
+if [ -f "$WRAPPER_PROPS" ]; then
+  printf 'distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-9.1.0-bin.zip\nzipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\n' > "$WRAPPER_PROPS"
+  log "gradle-wrapper.properties restored to the official distribution URL"
+fi
+if [ -f "$GRADLE_ZIP" ]; then
+  DIST_HASH=$(python3 - <<'PY'
+import hashlib
+url = "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip"
+n = int(hashlib.md5(url.encode()).hexdigest(), 16)
+digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+out = ""
+while n:
+    out = digits[n % 36] + out
+    n //= 36
+print(out)
+PY
+)
+  DIST_DIR="$HOME/.gradle/wrapper/dists/gradle-9.1.0-bin/$DIST_HASH"
+  if [ ! -d "$DIST_DIR/gradle-9.1.0" ]; then
+    mkdir -p "$DIST_DIR"
+    unzip -q -o "$GRADLE_ZIP" -d "$DIST_DIR"
+    touch "$DIST_DIR/gradle-9.1.0-bin.zip.ok"
+    log "installed local gradle zip into the wrapper cache ($DIST_HASH)"
+  fi
+fi

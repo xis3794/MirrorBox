@@ -39,7 +39,9 @@ if osdep.exists():
 mkvenv = root / 'python/scripts/mkvenv.py'
 if mkvenv.exists():
     text = mkvenv.read_text()
-    patched = text.replace('"-e"] + local_packages,', '"] + local_packages,')
+    # '"-e"] + local_packages,' -> '] + local_packages,'  (keeps the list syntactically valid:
+    # the previous element already ends with a comma)
+    patched = text.replace('"-e"] + local_packages,', '] + local_packages,')
     if patched != text:
         mkvenv.write_text(patched)
         print('patched mkvenv.py: editable install downgraded to a normal install')

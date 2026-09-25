@@ -57,17 +57,24 @@ jobs:
           qemu-img check /tmp/engine.qcow2
           ./gradlew --no-daemon :qcow2:qcow2Cli --args="verify /tmp/engine.qcow2"
 
-      - name: verification of the engine written payload (through qemu-img)
+      - name: verification of the engine written payload (read back through qemu-img)
         run: |
-          qemu-img dd -f qcow2 -O raw if=/tmp/engine.qcow2 of=/tmp/payload.raw bs=1 skip=12345 count=200000
-          python3 - /tmp/payload.raw <<'PY'
+          # qemu-img convert is used instead of `dd` on purpose: the byte pattern written at
+          # offset 12345 must survive a full round trip through QEMU's own reader.
+          qemu-img convert -f qcow2 -O raw /tmp/engine.qcow2 /tmp/engine.raw
+          ls -l /tmp/engine.raw
+          python3 - /tmp/engine.raw <<'PY'
           import sys
           data = open(sys.argv[1], 'rb').read()
+          segment = data[12345:212345]
           expected = bytes(((i * 7 + 13) % 251) for i in range(200000))
-          if data != expected:
-              print(f'::error::payload mismatch ({len(data)} bytes)')
+          if segment != expected:
+              print(f'::error::payload mismatch ({len(segment)} bytes read back)')
               sys.exit(1)
-          print('payload verified through qemu-img dd:', len(data), 'bytes')
+          if any(byte != 0 for byte in data[212345:220000]):
+              print('::error::bytes after the written range must stay zero')
+              sys.exit(1)
+          print('payload verified through qemu-img:', len(segment), 'bytes, trailing region zeroed')
           PY
 
   apk:

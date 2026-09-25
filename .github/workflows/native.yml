@@ -54,9 +54,13 @@ jobs:
           sudo apt-get install -y -qq build-essential autoconf automake libtool pkg-config \
             gettext texinfo bison flex file zip unzip wget curl patchelf
           python3 -m pip install --quiet --upgrade pip
-          python3 -m pip install --quiet meson ninja
+          # meson-python provides the PEP 517/660 backend QEMU's configure needs when it
+          # installs its own python/qemu.qmp module in editable mode (QEMU creates a
+          # --system-site-packages venv, so a system level install is enough).
+          python3 -m pip install --quiet meson ninja meson-python pycotap
           meson --version
           ninja --version
+          python3 -c "import mesonpy; print('meson-python backend available')"
           patchelf --version
 
       - name: Cache upstream sources

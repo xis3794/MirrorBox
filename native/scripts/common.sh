@@ -43,7 +43,10 @@ export STRIP="${TOOLCHAIN}/bin/llvm-strip"
 export NM="${TOOLCHAIN}/bin/llvm-nm"
 export OBJCOPY="${TOOLCHAIN}/bin/llvm-objcopy"
 export LD="${TOOLCHAIN}/bin/ld.lld"
-export CFLAGS_COMMON="-O2 -fPIC -fstack-protector-strong -D__ANDROID_API__=${ANDROID_API}"
+# NOTE: __ANDROID_API__ is deliberately not defined here — the NDK's clang wrappers
+# (aarch64-linux-android24-clang) already define it, and defining it again triggers
+# `-Werror,-Wmacro-redefined` inside meson/glib's compiler probes.
+export CFLAGS_COMMON="-O2 -fPIC -fstack-protector-strong"
 export LDFLAGS_COMMON="-Wl,-z,max-page-size=16384"
 
 # Exported so that autotools based components (libffi, pcre2, e2fsprogs, mtools, …) pick up the

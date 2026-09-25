@@ -95,7 +95,7 @@ endian = 'little'
 needs_exe_wrapper = true
 
 [built-in options]
-c_args = ['-O2', '-fPIC', '-fstack-protector-strong', '-D__ANDROID_API__=${ANDROID_API}']
+c_args = ['-O2', '-fPIC', '-fstack-protector-strong']
 c_link_args = ['-Wl,-z,max-page-size=16384']
 EOF
 

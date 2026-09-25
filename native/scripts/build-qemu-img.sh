@@ -31,6 +31,18 @@ if osdep.exists():
     if 'android_malloc_trim_stub' not in text:
         text = text.replace('#include <stdlib.h>', '#include <stdlib.h>\n/* android: bionic has no malloc_trim */\n#if defined(__ANDROID__)\nstatic inline int malloc_trim(size_t pad) { (void)pad; return 0; }\n#endif', 1)
         osdep.write_text(text)
+
+# QEMU's mkvenv installs its in-tree python/qemu.qmp module with
+# `pip --no-build-isolation -e`. Editable installs need a PEP 660 capable backend, which the
+# runner's older setuptools does not provide; qemu-img does not care about editable semantics,
+# so the flag is dropped and the module is installed normally.
+mkvenv = root / 'python/scripts/mkvenv.py'
+if mkvenv.exists():
+    text = mkvenv.read_text()
+    patched = text.replace('"-e"] + local_packages,', '"] + local_packages,')
+    if patched != text:
+        mkvenv.write_text(patched)
+        print('patched mkvenv.py: editable install downgraded to a normal install')
 PY
 
 export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PREFIX}/share/pkgconfig"

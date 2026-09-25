@@ -54,13 +54,13 @@ jobs:
           sudo apt-get install -y -qq build-essential autoconf automake libtool pkg-config \
             gettext texinfo bison flex file zip unzip wget curl patchelf
           python3 -m pip install --quiet --upgrade pip
-          # meson-python provides the PEP 517/660 backend QEMU's configure needs when it
-          # installs its own python/qemu.qmp module in editable mode (QEMU creates a
-          # --system-site-packages venv, so a system level install is enough).
-          python3 -m pip install --quiet meson ninja meson-python pycotap
+          # QEMU's python/qemu.qmp module is installed with 'pip --no-build-isolation -e',
+          # which needs a PEP 660 capable backend: setuptools >= 64 (Ubuntu 22.04 ships 59,
+          # which silently lacks build_editable) plus meson-python for safety.
+          python3 -m pip install --quiet --upgrade "setuptools>=64" wheel meson ninja meson-python pycotap
+          python3 -c "import setuptools, mesonpy; print('setuptools', setuptools.__version__)"
           meson --version
           ninja --version
-          python3 -c "import mesonpy; print('meson-python backend available')"
           patchelf --version
 
       - name: Cache upstream sources

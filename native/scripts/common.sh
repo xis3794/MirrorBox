@@ -46,6 +46,12 @@ export LD="${TOOLCHAIN}/bin/ld.lld"
 export CFLAGS_COMMON="-O2 -fPIC -fstack-protector-strong -D__ANDROID_API__=${ANDROID_API}"
 export LDFLAGS_COMMON="-Wl,-z,max-page-size=16384"
 
+# Exported so that autotools based components (libffi, pcre2, e2fsprogs, mtools, …) pick up the
+# cross flags without having to pass them explicitly.
+export CFLAGS="${CFLAGS_COMMON}"
+export CXXFLAGS="${CFLAGS_COMMON}"
+export LDFLAGS="${LDFLAGS_COMMON}"
+
 log() { printf '\033[1;36m[native]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[native]\033[0m %s\n' "$*" >&2; }
 

@@ -8,9 +8,9 @@ build_zlib() {
   fetch "${ZLIB_URL}" "zlib-${ZLIB_VERSION}.tar.gz"
   unpack "zlib-${ZLIB_VERSION}.tar.gz" "${BUILD_DIR}/zlib"
   cd "${BUILD_DIR}/zlib"
-  # zlib's configure picks up CC/AR/RANLIB from the environment; static only keeps the shipped
-  # surface small (qemu-img links it in directly).
-  CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" CFLAGS="${CFLAGS_COMMON}" \
+  # zlib's hand written configure only skips its compile-and-run probes when CHOST is set,
+# which is essential for cross compiling (the produced binaries cannot run on the build host).
+  CHOST="${TRIPLE}" CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" CFLAGS="${CFLAGS_COMMON}" \
     ./configure --prefix="${PREFIX}" --static
   make -j"${JOBS}"
   make install
@@ -53,8 +53,16 @@ build_libffi() {
   fetch "${LIBFFI_URL}" "libffi-${LIBFFI_VERSION}.tar.gz"
   unpack "libffi-${LIBFFI_VERSION}.tar.gz" "${BUILD_DIR}/libffi"
   cd "${BUILD_DIR}/libffi"
-  ./configure --host="${TRIPLE}" --prefix="${PREFIX}" --disable-shared --enable-static
-  make -j"${JOBS}"
+  # --disable-exec-static-tramp is required on Android:
+  #  * static trampolines call open_temp_exec_file(), which libffi declares nowhere, and modern
+  #    clang rejects implicit function declarations outright
+  #  * the whole feature needs an exec-writable temporary file, which Android's W^X rules deny
+  # GLib only needs ordinary closures, so disabling it is both safe and semantically right.
+  ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
+    --disable-shared --enable-static \
+    --disable-exec-static-tramp \
+    > "${LOG_DIR}/libffi-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/libffi-configure.log" >&2; exit 1; }
+  make -j"${JOBS}" > "${LOG_DIR}/libffi-make.log" 2>&1 || { tail -60 "${LOG_DIR}/libffi-make.log" >&2; exit 1; }
   make install
 }
 
@@ -81,6 +89,10 @@ endian = 'little'
 [properties]
 # Target binaries cannot be executed on the build host.
 needs_exe_wrapper = true
+
+[built-in options]
+c_args = ['-O2', '-fPIC', '-fstack-protector-strong', '-D__ANDROID_API__=${ANDROID_API}']
+c_link_args = ['-Wl,-z,max-page-size=16384']
 EOF
 
   export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PREFIX}/share/pkgconfig"

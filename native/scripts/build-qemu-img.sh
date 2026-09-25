@@ -53,7 +53,7 @@ export LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib -Wl,-rpath,\$ORIGIN"
   --disable-linux-aio --disable-linux-io-uring \
   --disable-capstone \
   --disable-gnutls --disable-nettle --disable-gcrypt \
-  --enable-zlib --enable-zstd \
+  --enable-zstd \
   --with-coroutine=ucontext \
   --extra-cflags="-I${PREFIX}/include" \
   > "${LOG_DIR}/qemu-configure.log" 2>&1 || { tail -60 "${LOG_DIR}/qemu-configure.log" >&2; exit 1; }

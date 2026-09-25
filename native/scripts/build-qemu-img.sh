@@ -43,11 +43,12 @@ export LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib -Wl,-rpath,\$ORIGIN"
   --disable-user \
   --disable-docs \
   --disable-guest-agent \
-  --disable-sdl --disable-gtk --disable-vnc --disable-curses \
+  --disable-werror \
+  --disable-sdl --disable-gtk --disable-vnc \
   --disable-linux-aio --disable-linux-io-uring \
-  --disable-capstone --disable-fdt --disable-pixman \
+  --disable-capstone \
   --disable-gnutls --disable-nettle --disable-gcrypt \
-  --enable-zstd --enable-zlib \
+  --enable-zlib --enable-zstd \
   --with-coroutine=ucontext \
   --extra-cflags="-I${PREFIX}/include" \
   > "${LOG_DIR}/qemu-configure.log" 2>&1 || { tail -60 "${LOG_DIR}/qemu-configure.log" >&2; exit 1; }

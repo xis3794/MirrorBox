@@ -16,12 +16,21 @@ on:
           - arm64-v8a
           - armeabi-v7a
           - x86_64
+      targets:
+        description: 'Build stages (space separated: deps qemu fstools xorriso)'
+        required: false
+        default: 'deps qemu fstools xorriso'
+        type: string
   workflow_call:
     inputs:
       abi:
         required: false
         type: string
         default: 'arm64-v8a'
+      targets:
+        required: false
+        type: string
+        default: 'deps qemu fstools xorriso'
 
 permissions:
   contents: read
@@ -29,6 +38,7 @@ permissions:
 env:
   ANDROID_NDK_ROOT: ${{ github.workspace }}/android-ndk
   ABI: ${{ inputs.abi || 'arm64-v8a' }}
+  TARGETS: ${{ inputs.targets || 'deps qemu fstools xorriso' }}
 
 jobs:
   build:

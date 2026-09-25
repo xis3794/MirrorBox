@@ -8,22 +8,34 @@ build_zlib() {
   fetch "${ZLIB_URL}" "zlib-${ZLIB_VERSION}.tar.gz"
   unpack "zlib-${ZLIB_VERSION}.tar.gz" "${BUILD_DIR}/zlib"
   cd "${BUILD_DIR}/zlib"
-  CHOST="${TRIPLE}" ./configure --prefix="${PREFIX}" --static
+  # zlib's configure picks up CC/AR/RANLIB from the environment; static only keeps the shipped
+  # surface small (qemu-img links it in directly).
+  CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" CFLAGS="${CFLAGS_COMMON}" \
+    ./configure --prefix="${PREFIX}" --static
   make -j"${JOBS}"
   make install
-  package_lib "${PREFIX}/lib/libz.so" || true
+  write_pc "zlib" "${ZLIB_VERSION}" "-L\${libdir} -lz" "-I\${includedir}"
 }
 
 build_zstd() {
   fetch "${ZSTD_URL}" "zstd-${ZSTD_VERSION}.tar.gz"
   unpack "zstd-${ZSTD_VERSION}.tar.gz" "${BUILD_DIR}/zstd"
   cd "${BUILD_DIR}/zstd"
-  make -j"${JOBS}" lib-release
+  make -j"${JOBS}" lib-release CC="${CC}" AR="${AR}" CFLAGS="${CFLAGS_COMMON}"
+  mkdir -p "${PREFIX}/lib" "${PREFIX}/include"
   cp -f lib/libzstd.so* "${PREFIX}/lib/" 2>/dev/null || true
-  mkdir -p "${PREFIX}/include"
-  cp -f lib/zstd.h "${PREFIX}/include/"
-  normalize_so "${PREFIX}/lib/libzstd.so.1"
-  for f in "${PREFIX}"/lib/libzstd.so*; do package_lib "$f"; done
+  cp -f lib/libzstd.a "${PREFIX}/lib/" 2>/dev/null || true
+  cp -f lib/zstd.h lib/zdict.h lib/zstd_errors.h "${PREFIX}/include/" 2>/dev/null || true
+  local unversioned
+  unversioned="$(normalize_so "${PREFIX}/lib/libzstd.so.1")"
+  # Only the unversioned name is shipped: Android only extracts lib*.so entries and the
+  # packaging verifier rejects versioned leftovers.
+  if [[ -f "${PREFIX}/lib/libzstd.so" ]]; then
+    package_lib "${PREFIX}/lib/libzstd.so"
+  elif [[ -n "${unversioned}" && -f "${unversioned}" ]]; then
+    package_lib "${unversioned}"
+  fi
+  write_pc "libzstd" "${ZSTD_VERSION}" "-L\${libdir} -lzstd" "-I\${includedir}"
 }
 
 build_pcre2() {
@@ -65,6 +77,10 @@ system = 'android'
 cpu_family = '$( [[ "${ABI}" == x86_64 ]] && echo x86_64 || echo aarch64 )'
 cpu = '$( [[ "${ABI}" == x86_64 ]] && echo x86_64 || echo aarch64 )'
 endian = 'little'
+
+[properties]
+# Target binaries cannot be executed on the build host.
+needs_exe_wrapper = true
 EOF
 
   export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PREFIX}/share/pkgconfig"
@@ -78,6 +94,7 @@ EOF
     --default-library shared \
     -Dselinux=disabled -Dxattr=false -Dlibmount=disabled -Dman=false \
     -Dtests=false -Dglib_debug=disabled -Ddocumentation=false \
+    -Dintrospection=disabled \
     > "${LOG_DIR}/glib-meson.log" 2>&1 || { cat "${LOG_DIR}/glib-meson.log" >&2; return 1; }
   ninja -C "${BUILD_DIR}/glib-build" -j"${JOBS}"
   ninja -C "${BUILD_DIR}/glib-build" install

@@ -64,10 +64,37 @@ fetch() {
 
 unpack() {
   local archive="$1" dest="$2"
-  [[ -d "${dest}" ]] && return 0
+  # Skip when the destination already holds an unpacked tree (CI cache / re-run).
+  if [[ -d "${dest}" && -n "$(ls -A "${dest}" 2>/dev/null)" ]]; then
+    return 0
+  fi
   mkdir -p "${dest}"
   log "unpacking ${archive}"
-  tar -xf "${SRC_DIR}/${archive}" -C "$(dirname "${dest}")" --strip-components=1 --no-same-owner --no-overwrite-dir
+  # NOTE: extract *into* ${dest} with --strip-components=1 (the tarballs have a single
+  # top-level directory). Extracting into $(dirname dest) would scatter the sources into the
+  # build directory — an early CI failure that looked like "configure: No such file".
+  tar -xf "${SRC_DIR}/${archive}" -C "${dest}" --strip-components=1 --no-same-owner --no-overwrite-dir
+}
+
+# Writes a minimal pkg-config file; needed because QEMU detects zlib/zstd through pkg-config
+# and the upstream zlib/zstd builds do not always install one.
+write_pc() {
+  local name="$1" version="$2" libs="$3" cflags="$4"
+  local dir="${PREFIX}/lib/pkgconfig"
+  mkdir -p "${dir}"
+  {
+    echo "prefix=${PREFIX}"
+    echo "exec_prefix=\${prefix}"
+    echo "libdir=\${exec_prefix}/lib"
+    echo "includedir=\${prefix}/include"
+    echo ""
+    echo "Name: ${name}"
+    echo "Description: ${name} (MirrorBox cross build)"
+    echo "Version: ${version}"
+    echo "Libs: ${libs}"
+    echo "Cflags: ${cflags}"
+  } > "${dir}/${name}.pc"
+  log "wrote ${dir}/${name}.pc"
 }
 
 # Ensures a binary shipped from a toolchain still resolves $ORIGIN rpaths and

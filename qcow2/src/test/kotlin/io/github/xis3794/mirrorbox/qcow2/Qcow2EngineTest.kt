@@ -127,6 +127,32 @@ class Qcow2EngineTest {
     }
 
     @Test
+    fun writtenEntriesUseTheOnDiskCopiedFlag() {
+        // Verified against QEMU generated images: a standard cluster entry is
+        // `copied(bit63) | offset(bits 9..55)` and bit0 is reserved (the zero-cluster marker).
+        val f = tempImage()
+        try {
+            Qcow2Image.create(f, 32L * 1024 * 1024).use { img ->
+                img.write(0L, pattern(200_000))
+                img.flush()
+                val l1 = img.l1Entry(0L)
+                assertEquals(1L shl 63, l1 and (1L shl 63), "L1 entry must set the copied flag")
+                assertEquals(0L, l1 and 1L, "bit0 must stay clear on L1 entries")
+
+val l2 = img.l2TableEntries(0L)!!
+                val entry = l2[0]
+                assertEquals(1L shl 63, entry and (1L shl 63), "L2 standard entry must set the copied flag")
+                assertEquals(0L, entry and 1L, "bit0 must stay clear on standard L2 entries")
+                val offset = entry and 0x00fffffffffffe00L
+                assertTrue(offset != 0L, "standard entry must point at an allocated cluster")
+                assertEquals(0L, offset % img.clusterSize, "offset must be cluster aligned")
+            }
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
     fun rejectsInvalidImages() {
         val f = tempImage()
         try {

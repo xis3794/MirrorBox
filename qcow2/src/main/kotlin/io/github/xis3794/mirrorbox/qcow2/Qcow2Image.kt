@@ -81,6 +81,9 @@ class Qcow2Image private constructor(
             try {
                 val (info, backing) = readHeader(raf)
                 if (writable) {
+                    if (info.version == Qcow2.VERSION_2) {
+                        throw Qcow2Exception("qcow2 v2 镜像不支持就地写入（v2 的标志位语义不同），请先用 qemu-img convert 转成 v3")
+                    }
                     if (info.hasExternalDataFile) {
                         throw Qcow2Exception("该镜像使用外部数据文件（external data file），暂不支持写入")
                     }
@@ -547,13 +550,15 @@ class Qcow2Image private constructor(
     private fun classifyEntry(entry: Long): ClusterType {
         if (entry == 0L) return ClusterType.UNALLOCATED
         if (header.version == Qcow2.VERSION_2) {
+            // v2: bit63 marks a compressed cluster, bit0 is the legacy copied flag.
             if (entry and Qcow2.ENTRY_COMPRESSED_V2 != 0L) return ClusterType.COMPRESSED
             if (entry and Qcow2.ENTRY_OFFSET_MASK == 0L) return ClusterType.UNALLOCATED
             return ClusterType.ALLOCATED
         }
+        // v3: bit63 = copied, bit62 = compressed, bit0 (alone) = zero cluster.
         if ((entry and Qcow2.ENTRY_COMPRESSED_MASK) == Qcow2.ENTRY_COMPRESSED_V3) return ClusterType.COMPRESSED
-        if (entry == Qcow2.ENTRY_ALLOCATED_FLAG) return ClusterType.ZERO
-        if ((entry and Qcow2.ENTRY_ALLOCATED_FLAG) == 0L) return ClusterType.UNALLOCATED
+        if (entry == Qcow2.ENTRY_ZERO_CLUSTER) return ClusterType.ZERO
+        if (entry and Qcow2.ENTRY_OFFSET_MASK == 0L) return ClusterType.UNALLOCATED
         return ClusterType.ALLOCATED
     }
 
@@ -609,7 +614,7 @@ class Qcow2Image private constructor(
 
         val table = l2Table(l2Cluster)
         val entry = BE.u64(table, l2Idx * 8)
-        val zeroEntry = if (header.isV3) Qcow2.ENTRY_ALLOCATED_FLAG else 0L
+        val zeroEntry = if (header.isV3) Qcow2.ENTRY_ZERO_CLUSTER else 0L
 
         when (classifyEntry(entry)) {
             ClusterType.UNALLOCATED, ClusterType.ZERO -> {

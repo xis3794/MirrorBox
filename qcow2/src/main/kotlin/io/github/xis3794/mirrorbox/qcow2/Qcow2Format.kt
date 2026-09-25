@@ -27,8 +27,18 @@ object Qcow2 {
     const val REFCOUNT_ORDER_DEFAULT = 4
 
     // ---- L1 / L2 entry flags ------------------------------------------------
-    /** Entry uses bit0 as "allocated / copied" flag. */
-    const val ENTRY_ALLOCATED_FLAG = 1L
+    /**
+     * "Copied" / exclusively-owned flag.
+     *
+     * On disk this is **bit 63** — verified against images written by QEMU itself:
+     * a standard cluster entry looks like `0x8000_0000_0005_0000` (copied + offset),
+     * while a zero cluster is exactly `0x1` and bit 0 is *reserved* for L1 entries.
+     */
+    const val ENTRY_ALLOCATED_FLAG = 1L shl 63
+
+    /** v3 zero-cluster marker: the entry is exactly 1 (bit0 set, everything else zero). */
+    const val ENTRY_ZERO_CLUSTER = 1L
+
     const val ENTRY_COMPRESSED_V3 = 1L shl 62
     const val ENTRY_COMPRESSED_V2 = 1L shl 63
     const val ENTRY_COMPRESSED_MASK = 3L shl 62

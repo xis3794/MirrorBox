@@ -12,9 +12,9 @@ permissions:
 
 jobs:
   engine:
-    name: qcow2 engine (unit tests + qemu-img cross check)
+    name: qcow2 engine (unit tests + qemu-img cross checks)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -24,37 +24,56 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install host tools (qemu-img for cross validation)
+      - name: Install host tools (qemu-img / qemu-io for cross validation)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-utils file
+          qemu-img --version | head -1
 
       - name: Engine unit tests
         run: ./gradlew --no-daemon :qcow2:test
 
-      - name: qemu-img -> engine (read a foreign image)
+      # ---------------------------------------------------------------- read direction
+      - name: qemu-img -> engine (byte exact read of a foreign image)
         run: |
-          qemu-img create -f qcow2 /tmp/ref.qcow2 64M
-          qemu-img info --output=json /tmp/ref.qcow2
-          ./gradlew --no-daemon :qcow2:qcow2Cli --args="info /tmp/ref.qcow2"
-          ./gradlew --no-daemon :qcow2:qcow2Cli --args="verify /tmp/ref.qcow2"
+          qemu-img create -f qcow2 -o cluster_size=65536 /tmp/ref.qcow2 32M
+          qemu-io -c 'write -P 0xab 0 100000' /tmp/ref.qcow2
+          qemu-img convert -f qcow2 -O raw /tmp/ref.qcow2 /tmp/ref.raw
+          EXPECTED=$(sha256sum /tmp/ref.raw | cut -d' ' -f1)
+          ACTUAL=$(./gradlew -q :qcow2:qcow2Cli --args="verify /tmp/ref.qcow2" 2>/dev/null | grep '^sha256=' | cut -d= -f2)
+          echo "qemu-img raw : $EXPECTED"
+          echo "mirrorbox    : $ACTUAL"
+          if [ -z "$ACTUAL" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::engine read does not match qemu-img output"
+            exit 1
+          fi
 
+      # ---------------------------------------------------------------- write direction
       - name: engine -> qemu-img (qemu must accept what we write)
         run: |
           ./gradlew --no-daemon :qcow2:qcow2Cli --args="create /tmp/engine.qcow2 33554432"
           ./gradlew --no-daemon :qcow2:qcow2Cli --args="write /tmp/engine.qcow2 12345 200000"
           ./gradlew --no-daemon :qcow2:qcow2Cli --args="stats /tmp/engine.qcow2"
           qemu-img check /tmp/engine.qcow2
-          qemu-img convert -f qcow2 -O raw /tmp/engine.qcow2 /tmp/engine.raw
-          ls -l /tmp/engine.raw
-          # the engine's own view of its output must match qemu-img's
           ./gradlew --no-daemon :qcow2:qcow2Cli --args="verify /tmp/engine.qcow2"
-          qemu-img compare -f raw -F qcow2 /tmp/engine.raw /tmp/engine.qcow2 || exit 1
+
+      - name: verification of the engine written payload (through qemu-img)
+        run: |
+          qemu-img dd -f qcow2 -O raw if=/tmp/engine.qcow2 of=/tmp/payload.raw bs=1 skip=12345 count=200000
+          python3 - /tmp/payload.raw <<'PY'
+          import sys
+          data = open(sys.argv[1], 'rb').read()
+          expected = bytes(((i * 7 + 13) % 251) for i in range(200000))
+          if data != expected:
+              print(f'::error::payload mismatch ({len(data)} bytes)')
+              sys.exit(1)
+          print('payload verified through qemu-img dd:', len(data), 'bytes')
+          PY
 
   apk:
     name: Debug APK (shell only, no native tools)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -64,12 +83,23 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      # The preinstalled SDK on GitHub runners is used directly: android-actions/setup-android
+      # currently fails with "Failed to find package 'tools'", so we manage the SDK ourselves.
+      - name: Prepare Android SDK
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          sudo mkdir -p "$SDK"
+          sudo chown -R "$(id -u):$(id -g)" "$SDK"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          ls "$SDK" || true
 
       - name: Install SDK packages
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build debug APK
         run: |

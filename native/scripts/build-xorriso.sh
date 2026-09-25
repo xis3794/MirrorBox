@@ -7,6 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 fetch "${XORRISO_URL}" "xorriso-${XORRISO_VERSION}.tar.gz"
 unpack "xorriso-${XORRISO_VERSION}.tar.gz" "${BUILD_DIR}/xorriso"
+
+if [[ -f "${OUT_DIR}/${ABI}/tools/libxorriso.so" ]]; then
+  log "xorriso already built (cached)"
+  exit 0
+fi
 cd "${BUILD_DIR}/xorriso"
 
 # xorriso brings its own libburn/libisofs; optical device support is irrelevant

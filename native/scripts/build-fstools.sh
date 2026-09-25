@@ -6,6 +6,10 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 build_e2fsprogs() {
+  if [[ -f "${OUT_DIR}/${ABI}/tools/libmke2fs.so" ]]; then
+    log "e2fsprogs already built (cached)"
+    return 0
+  fi
   fetch "${E2FSPROGS_URL}" "e2fsprogs-${E2FSPROGS_VERSION}.tar.xz" || \
     fetch "https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v${E2FSPROGS_VERSION}/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz" "e2fsprogs-${E2FSPROGS_VERSION}.tar.xz"
   unpack "e2fsprogs-${E2FSPROGS_VERSION}.tar.xz" "${BUILD_DIR}/e2fsprogs"
@@ -28,6 +32,10 @@ build_e2fsprogs() {
 }
 
 build_dosfstools() {
+  if [[ -f "${OUT_DIR}/${ABI}/tools/libmkfs-fat.so" ]]; then
+    log "dosfstools already built (cached)"
+    return 0
+  fi
   fetch "${DOSFSTOOLS_URL}" "dosfstools-${DOSFSTOOLS_VERSION}.tar.gz"
   unpack "dosfstools-${DOSFSTOOLS_VERSION}.tar.gz" "${BUILD_DIR}/dosfstools"
   cd "${BUILD_DIR}/dosfstools"
@@ -40,6 +48,10 @@ build_dosfstools() {
 }
 
 build_mtools() {
+  if [[ -f "${OUT_DIR}/${ABI}/tools/libmcopy.so" ]]; then
+    log "mtools already built (cached)"
+    return 0
+  fi
   fetch "${MTOOLS_URL}" "mtools-${MTOOLS_VERSION}.tar.gz"
   unpack "mtools-${MTOOLS_VERSION}.tar.gz" "${BUILD_DIR}/mtools"
   cd "${BUILD_DIR}/mtools"
@@ -55,6 +67,10 @@ build_mtools() {
 }
 
 build_ntfsprogs() {
+  if [[ -f "${OUT_DIR}/${ABI}/tools/libmkntfs.so" ]]; then
+    log "ntfsprogs already built (cached)"
+    return 0
+  fi
   fetch "${NTFS3G_URL}" "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" || \
     fetch "https://github.com/tuxera/ntfs-3g/releases/download/${NTFS3G_VERSION}/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
   unpack "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" "${BUILD_DIR}/ntfs-3g"

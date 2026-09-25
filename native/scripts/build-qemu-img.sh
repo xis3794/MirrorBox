@@ -7,6 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 fetch "${QEMU_URL}" "qemu-${QEMU_VERSION}.tar.xz"
 unpack "qemu-${QEMU_VERSION}.tar.xz" "${BUILD_DIR}/qemu"
 
+if [[ -f "${OUT_DIR}/${ABI}/tools/libqemu-img.so" ]]; then
+  log "qemu-img already built (cached)"
+  exit 0
+fi
+
 cd "${BUILD_DIR}/qemu"
 
 # Android/bionic adaptations (the same class of fixes used by Limbo's QEMU 11 port):

@@ -65,6 +65,15 @@ jobs:
           path: native/src
           key: native-src-${{ hashFiles('native/versions.env') }}
 
+      # The built prefix is cached so that later iterations (e.g. only qemu changed) do not
+      # rebuild glib/libffi from scratch. Individual build functions skip already-built
+      # components, so a partially filled cache is harmless.
+      - name: Cache built toolchain
+        uses: actions/cache@v4
+        with:
+          path: native/out
+          key: native-out-${{ env.ABI }}-${{ hashFiles('native/versions.env') }}
+
       - name: Set up Android NDK r26d
         run: |
           curl -fL --retry 5 --retry-delay 3 -o /tmp/ndk.zip \

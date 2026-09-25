@@ -69,6 +69,10 @@ build_libffi() {
 # GLib needs a lot of care on bionic: meson is used (autotools is deprecated),
 # and the resulting .so files must be unversioned for Android packaging.
 build_glib() {
+  if [[ -f "${PREFIX}/lib/libglib-2.0.so" ]]; then
+    log "glib already built (cached)"
+    return 0
+  fi
   fetch "${GLIB_URL}" "glib-${GLIB_VERSION}.tar.xz"
   unpack "glib-${GLIB_VERSION}.tar.xz" "${BUILD_DIR}/glib"
   cd "${BUILD_DIR}/glib"
@@ -100,15 +104,15 @@ EOF
   export CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include"
   export LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib"
 
-  # Option names verified against glib 2.76's meson_options.txt:
-  #   features -> disabled, boolean -> false; there is no "documentation"/"introspection"
-  #   option in this release (gobject-introspection is a separate project).
+  # Option types verified against glib 2.76's meson_options.txt:
+  #   feature options (selinux, libmount, libelf, nls, glib_debug) take "disabled",
+  #   boolean options (xattr, man, gtk_doc, tests, installed_tests, multiarch) take false.
   meson setup "${BUILD_DIR}/glib-build" \
     --cross-file "${BUILD_DIR}/android-cross.ini" \
     --prefix "${PREFIX}" \
     --default-library shared \
-    -Dselinux=disabled -Dxattr=disabled -Dlibmount=disabled -Dlibelf=disabled \
-    -Dman=disabled -Dgtk_doc=false -Dtests=false -Dinstalled_tests=false \
+    -Dselinux=disabled -Dxattr=false -Dlibmount=disabled -Dlibelf=disabled \
+    -Dman=false -Dgtk_doc=false -Dtests=false -Dinstalled_tests=false \
     -Dnls=disabled -Dglib_debug=disabled -Dmultiarch=false \
     > "${LOG_DIR}/glib-meson.log" 2>&1 || { cat "${LOG_DIR}/glib-meson.log" >&2; return 1; }
   ninja -C "${BUILD_DIR}/glib-build" -j"${JOBS}"

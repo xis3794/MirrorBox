@@ -63,17 +63,18 @@ jobs:
           ninja --version
           patchelf --version
 
-      - name: Cache upstream sources
-        uses: actions/cache@v4
+      - name: Restore upstream sources
+        uses: actions/cache/restore@v4
         with:
           path: native/src
           key: native-src-${{ hashFiles('native/versions.env') }}
 
-      # The built prefix is cached so that later iterations (e.g. only qemu changed) do not
-      # rebuild glib/libffi from scratch. Individual build functions skip already-built
-      # components, so a partially filled cache is harmless.
-      - name: Cache built toolchain
-        uses: actions/cache@v4
+      # The built prefix is restored (and saved at the end of the job regardless of the outcome)
+      # so that later iterations — e.g. only QEMU changed — do not rebuild glib/libffi.
+      # Individual build functions skip already-built components, so a partially filled cache is
+      # harmless.
+      - name: Restore built toolchain
+        uses: actions/cache/restore@v4
         with:
           path: native/out
           key: native-out-${{ env.ABI }}-${{ hashFiles('native/versions.env') }}
@@ -112,3 +113,19 @@ jobs:
           name: native-logs-${{ env.ABI }}
           path: native/out/logs/
           if-no-files-found: ignore
+
+      # Explicit saves: actions/cache's implicit post-step save was being skipped, which forced
+      # every iteration to rebuild the dependency chain from scratch.
+      - name: Save upstream sources
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: native/src
+          key: native-src-${{ hashFiles('native/versions.env') }}
+
+      - name: Save built toolchain
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: native/out
+          key: native-out-${{ env.ABI }}-${{ hashFiles('native/versions.env') }}

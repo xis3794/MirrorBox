@@ -115,7 +115,9 @@ needs_exe_wrapper = true
 
 [built-in options]
 c_args = ['-O2', '-fPIC', '-fstack-protector-strong']
-c_link_args = ['-Wl,-z,max-page-size=16384']
+# -L${PREFIX}/lib is required: glib links our static libiconv/libffi through pkg-config, and
+# meson does not always carry the dependency's -L over to the final link line.
+c_link_args = ['-Wl,-z,max-page-size=16384', '-L${PREFIX}/lib']
 EOF
 
   export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PREFIX}/share/pkgconfig"
@@ -144,6 +146,20 @@ EOF
   done
   fix_needed "${PREFIX}/lib"
   for f in "${PREFIX}"/lib/lib*.so; do package_lib "$f"; done
+
+  # glib falls back to its bundled subprojects/proxy-libintl when no system intl exists.
+  # libglib-2.0.so then has DT_NEEDED=libintl.so, so that library must travel next to it.
+  for cand in "${BUILD_DIR}/glib-build/subprojects/proxy-libintl/"libintl.so*; do
+    [[ -e "${cand}" ]] || continue
+    local unversioned_intl
+    unversioned_intl="$(normalize_so "${cand}")"
+    if [[ -f "${unversioned_intl}" ]]; then
+      cp -f "${unversioned_intl}" "${PREFIX}/lib/libintl.so"
+      package_lib "${PREFIX}/lib/libintl.so"
+      log "packaged proxy libintl.so"
+    fi
+    break
+  done
 }
 
 main() {

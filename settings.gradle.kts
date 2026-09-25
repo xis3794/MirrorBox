@@ -28,6 +28,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "My Application"
+rootProject.name = "MirrorBox"
 include(":app")
+include(":qcow2")
  

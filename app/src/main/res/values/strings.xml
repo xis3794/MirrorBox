@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">My Application</string>
+    <string name="app_name">镜像匣</string>
+    <string name="app_name_en">MirrorBox</string>
 </resources>

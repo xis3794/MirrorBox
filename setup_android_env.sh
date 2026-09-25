@@ -634,3 +634,18 @@ main() {
 }
 
 main "$@"
+
+# >>> mirrorbox arm64 aapt2 override >>>
+# AGP 9 resolves its own aapt2 from Maven; on aarch64 hosts that artifact is x86_64 and cannot
+# run (the resource compiler transform then reports "Daemon startup failed"). Point AGP at the
+# ARM64 build-tools copy installed above instead.
+GRADLE_PROPS="$HOME/.gradle/gradle.properties"
+mkdir -p "$HOME/.gradle"
+if [ -x "$ANDROID_HOME/build-tools/35.0.0/aapt2" ]; then
+  if grep -q '^android.aapt2FromMavenOverride=' "$GRADLE_PROPS" 2>/dev/null; then
+    sed -i "s|^android.aapt2FromMavenOverride=.*|android.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2|" "$GRADLE_PROPS"
+  else
+    printf 'android.aapt2FromMavenOverride=%s\n' "$ANDROID_HOME/build-tools/35.0.0/aapt2" >> "$GRADLE_PROPS"
+  fi
+  log "aapt2 override written to $GRADLE_PROPS"
+fi

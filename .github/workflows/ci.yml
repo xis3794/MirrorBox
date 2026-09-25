@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: qcow2 engine (unit tests + qemu-img cross check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install host tools (qemu-img for cross validation)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils file
+
+      - name: Engine unit tests
+        run: ./gradlew --no-daemon :qcow2:test
+
+      - name: qemu-img -> engine (read a foreign image)
+        run: |
+          qemu-img create -f qcow2 /tmp/ref.qcow2 64M
+          qemu-img info --output=json /tmp/ref.qcow2
+          ./gradlew --no-daemon :qcow2:qcow2Cli --args="info /tmp/ref.qcow2"
+          ./gradlew --no-daemon :qcow2:qcow2Cli --args="verify /tmp/ref.qcow2"
+
+      - name: engine -> qemu-img (qemu must accept what we write)
+        run: |
+          ./gradlew --no-daemon :qcow2:qcow2Cli --args="create /tmp/engine.qcow2 33554432"
+          ./gradlew --no-daemon :qcow2:qcow2Cli --args="write /tmp/engine.qcow2 12345 200000"
+          ./gradlew --no-daemon :qcow2:qcow2Cli --args="stats /tmp/engine.qcow2"
+          qemu-img check /tmp/engine.qcow2
+          qemu-img convert -f qcow2 -O raw /tmp/engine.qcow2 /tmp/engine.raw
+          ls -l /tmp/engine.raw
+          # the engine's own view of its output must match qemu-img's
+          ./gradlew --no-daemon :qcow2:qcow2Cli --args="verify /tmp/engine.qcow2"
+          qemu-img compare -f raw -F qcow2 /tmp/engine.raw /tmp/engine.qcow2 || exit 1
+
+  apk:
+    name: Debug APK (shell only, no native tools)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirrorbox-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

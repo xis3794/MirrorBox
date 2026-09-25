@@ -1,203 +1,102 @@
-# Operit Android 项目
+# 镜像匣 MirrorBox
 
-这是一个基于 **Jetpack Compose** 的现代化 Android 应用开发模板。
+> **不启动虚拟机**，直接在手机上预览、编辑、生成 qcow2 磁盘镜像。
+> qcow2 ↔ vmdk / vhdx / vdi / raw 互转，ISO 制作与提取，全部离线、无需 root。
 
-## 🚀 项目特性
+[![CI](https://github.com/xis3794/MirrorBox/actions/workflows/ci.yml/badge.svg)](https://github.com/xis3794/MirrorBox/actions/workflows/ci.yml)
+[![Native Toolchain](https://github.com/xis3794/MirrorBox/actions/workflows/native.yml/badge.svg)](https://github.com/xis3794/MirrorBox/actions/workflows/native.yml)
+[![Release](https://github.com/xis3794/MirrorBox/actions/workflows/release.yml/badge.svg)](https://github.com/xis3794/MirrorBox/actions/workflows/release.yml)
 
-✅ **Jetpack Compose** - 现代化声明式 UI 框架  
-✅ **Material Design 3** - 最新设计规范  
-✅ **Kotlin** - 100% Kotlin 编写  
-✅ **Gradle Version Catalog** - 统一依赖管理  
-✅ **开箱即用** - 包含完整项目结构  
+---
 
-## 📁 项目结构
+## 这是什么
 
-```
-android-project/
-├── app/
-│   ├── src/
-│   │   ├── main/
-│   │   │   ├── java/com/java/myapplication/
-│   │   │   │   ├── MainActivity.kt          # 主Activity
-│   │   │   │   └── ui/theme/
-│   │   │   │       ├── Color.kt             # 颜色定义
-│   │   │   │       ├── Theme.kt             # 主题配置
-│   │   │   │       └── Type.kt              # 字体配置
-│   │   │   ├── res/                         # 资源文件
-│   │   │   └── AndroidManifest.xml          # 应用清单
-│   │   ├── androidTest/                     # Android测试
-│   │   └── test/                            # 单元测试
-│   ├── build.gradle.kts                     # App模块配置
-│   └── proguard-rules.pro                   # 混淆规则
-├── gradle/
-│   ├── libs.versions.toml                   # 依赖版本管理
-│   └── wrapper/                             # Gradle Wrapper
-├── build.gradle.kts                         # 项目级配置
-├── settings.gradle.kts                      # 项目设置
-├── gradle.properties                        # Gradle属性
-├── gradlew / gradlew.bat                    # Gradle命令
-└── .gitignore                               # Git忽略
-```
+镜像匣是一台**口袋里的镜像工作站**：它把 QEMU 的 `qemu-img`、`e2fsprogs`、`mtools`、`ntfsprogs`、
+`xorriso` 全部交叉编译进 APK，再用一套**自研的纯 Kotlin qcow2 引擎**补齐“没有 qemu-img 也能干活”的能力。
 
-## 🛠️ 快速开始
+不需要 root，不需要 Termux，不需要联网，也不需要启动任何虚拟机。
 
-### 1. 环境要求
-- ✅ **JDK 17+**（必需）
-- ✅ **Gradle** (已包含 Wrapper)
-- ✅ **Android SDK** (可选，用于完整编译)
+### 核心能力
 
-### 2. 构建项目
+| 能力 | 说明 |
+|---|---|
+| **预览** | qcow2 结构可视化：簇分配热图、L1/L2 表、快照时间线、分区图、十六进制视图（全部由内置引擎直接解析） |
+| **编辑（双轨）** | ① **直写**：引擎按簇写时复制，直接改扇区/回写修改，快且省空间；② **安全模式**：提取分区 → e2fsprogs / mtools / ntfsprogs 编辑 → 只回写变化的簇 → `qemu-img check` 校验 |
+| **生成** | 空白 qcow2（簇大小 / 预分配可选）、带分区与文件系统的磁盘（ext4 / FAT32 / NTFS，MBR 或 GPT） |
+| **转换** | qcow2 ↔ vmdk（monolithicSparse / streamOptimized / 2GB 分卷）、vhdx、vdi、raw、qcow、vpc、qed；支持 `-c` 压缩瘦身 |
+| **ISO 工作室** | 从文件夹制作 ISO（Joliet / RockRidge / El Torito BIOS / EFI 引导）、提取、编辑 |
+| **其他** | 一致性检查与修复、快照创建/回滚/删除、调整容量、导出 raw、任务中心（实时进度 + 日志） |
 
-#### 使用 Operit 内置命令按钮
-- 🔧 **初始化 Gradle Wrapper** - 首次使用
-- 🔨 **构建项目** - 编译整个项目
-- 🧹 **清理构建** - 清理构建缓存
-- 📋 **查看所有任务** - 列出可用任务
+### 设计要点
 
-#### 命令行方式
-```bash
-# Linux/Mac
-./gradlew build              # 构建项目
-./gradlew assembleDebug      # 打包Debug APK
-./gradlew installDebug       # 安装到设备
-./gradlew clean              # 清理构建
+- **零 VM**：所有操作都是文件级/扇区级运算，不启动 QEMU 系统模拟，功耗与内存占用极低。
+- **零网络**：APK 不申请 `INTERNET` 权限，工具链全部内置，数据不出设备。
+- **双引擎互证**：内置引擎写出的每个镜像都会被 `qemu-img check` 独立校验；CI 中还有
+  “qemu-img 生成的镜像让引擎读” 与 “引擎生成的镜像让 qemu-img 校验” 的双向对拍。
+- **UI**：Jetpack Compose + Material 3，液态玻璃组件、悬浮胶囊底栏、深浅色与性能档位。
 
-# Windows
-gradlew.bat build
-gradlew.bat assembleDebug
-```
+## 安装
 
-### 3. 生成的APK位置
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
+1. 打开 [Releases](https://github.com/xis3794/MirrorBox/releases)
+2. 下载 `MirrorBox-*-arm64-v8a.apk`（模拟器选 `x86_64`，或使用 `universal`）
+3. 安装后首次进入「设置 → 工具自检」确认原生工具链就绪
 
-## 📦 依赖管理
+> 应用未上架任何商店：可选的「所有文件访问」权限用于**原位**操作 `/sdcard` 上的大镜像，
+> 不授权也能用（走 SAF 导入导出）。
 
-项目使用 **Gradle Version Catalog** 统一管理依赖版本。
-
-### 查看当前依赖
-在 `gradle/libs.versions.toml` 中定义：
-
-```toml
-[versions]
-agp = "9.0.0"
-kotlin = "2.3.10"
-composeBom = "2026.01.01"
-
-[libraries]
-androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
-androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
-```
-
-### 添加新依赖
-1. 在 `gradle/libs.versions.toml` 中添加版本和库定义
-2. 在 `app/build.gradle.kts` 中引用：
-   ```kotlin
-   dependencies {
-       implementation(libs.your.library.name)
-   }
-   ```
-
-## 🎨 自定义应用
-
-### 修改应用名称
-编辑 `app/src/main/res/values/strings.xml`：
-```xml
-<string name="app_name">你的应用名</string>
-```
-
-### 修改包名
-1. 更新 `app/build.gradle.kts` 中的 `namespace` 和 `applicationId`
-2. 重命名 `java/com/java/myapplication` 目录结构
-3. 更新 `AndroidManifest.xml` 中的包名引用
-
-### 修改主题颜色
-编辑 `app/src/main/java/.../ui/theme/Color.kt`：
-```kotlin
-val Purple80 = Color(0xFFD0BCFF)  // 修改为你的颜色
-```
-
-## 📱 Compose 示例
-
-当前 `MainActivity.kt` 包含一个简单的 Greeting 示例：
-
-```kotlin
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-```
-
-你可以：
-- 添加更多 Composable 函数
-- 使用 Material3 组件
-- 实现导航（推荐使用 Navigation Compose）
-- 集成 ViewModel、Repository 等架构组件
-
-## 🔧 常用 Gradle 任务
+## 从源码构建
 
 ```bash
-./gradlew tasks              # 查看所有可用任务
-./gradlew clean              # 清理构建
-./gradlew build              # 完整构建
-./gradlew assembleDebug      # 构建Debug APK
-./gradlew assembleRelease    # 构建Release APK
-./gradlew installDebug       # 安装Debug到设备
-./gradlew test               # 运行单元测试
-./gradlew connectedAndroidTest # 运行Android测试
+git clone https://github.com/xis3794/MirrorBox.git
+cd MirrorBox
+
+# 1) 本地构建 APK（不含原生工具链，界面与内置引擎完整可用）
+./gradlew :app:assembleDebug
+
+# 2) 构建完整版（含 qemu-img 等工具）需要 NDK，见 native/README.md
+export ANDROID_NDK_ROOT=/path/to/android-ndk
+bash native/scripts/build-all.sh      # 产物注入 app/src/main/jniLibs/<abi>/
+./gradlew :app:assembleRelease
 ```
 
-## 📝 注意事项
+引擎单测与 qemu-img 对拍：
 
-⚠️ **关于 Android SDK**  
-- 此模板可以在 Operit 的 Ubuntu 环境中构建
-- 完整编译需要安装 Android SDK
-- 推荐使用 Android Studio 进行完整开发
-
-### ⚠️ ARM64 环境 AAPT2 替换（模板已内置）
-
-Gradle 会自动从 Google Maven 下载 AAPT2，但官方分发在 ARM64 Linux 环境下不可直接使用。
-此模板已经内置 ARM64 `aapt2`，`setup_android_env.sh` 会自动把它替换到 SDK build-tools 和 Gradle 缓存里。
-
-**模板内置来源**：
-- Release: https://github.com/ReVanced/aapt2/releases/tag/v1.0.0
-- ARM64 aapt2: https://github.com/ReVanced/aapt2/releases/download/v1.0.0/aapt2-arm64-v8a
-- SHA-256: `e5b5ff7f0d4f6ecd7fa5d05d77fed3f09f6f1bf80f078b8aada82bc578848561`
-
-**你只需要执行**
 ```bash
-chmod +x ./setup_android_env.sh
-./setup_android_env.sh
+./gradlew :qcow2:test
+./gradlew :qcow2:qcow2Cli --args="info my.qcow2"
 ```
 
-脚本会自动完成：
-- 替换 `$ANDROID_SDK/build-tools/35.0.0/aapt2`
-- 替换 `~/.gradle/caches/modules-2/files-2.1/com.android.tools.build/aapt2` 下的 jar 内二进制
-- 替换 `~/.gradle/caches/transforms-*` 中已经解压出来的 `aapt2`
+## 仓库结构
 
-⚠️ **关于包名**  
-- 默认包名为 `com.java.myapplication`
-- 发布前请修改为你的唯一包名
+```
+MirrorBox/
+├─ app/                    Android 应用（Compose UI、任务中心、工具执行层）
+├─ qcow2/                  纯 Kotlin qcow2 引擎（可 JVM 单测，含 CLI 自测工具）
+├─ native/                 原生工具链构建脚本与版本清单
+├─ .github/workflows/      CI / 原生构建 / 发布三条流水线
+├─ keys/                   固定签名密钥（保证覆盖安装）
+└─ docs/                   构建与架构说明
+```
 
-⚠️ **关于签名**  
-- Debug 版本自动使用调试签名
-- Release 版本需要配置签名密钥
+详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与 [native/README.md](native/README.md)。
 
-## 🌐 相关资源
+## 与 Limbo 的关系
 
-- [Jetpack Compose 官方文档](https://developer.android.com/jetpack/compose)
-- [Material Design 3](https://m3.material.io/)
-- [Android 开发者指南](https://developer.android.com/)
-- [Kotlin 官方文档](https://kotlinlang.org/)
+镜像匣生成/转换出来的 qcow2 可以直接丢给 [Limbo](https://github.com/xis3794/limbo) 之类的
+QEMU 前端启动；两者的 Android/bionic 构建经验（NDK 配置、glib 移植、`patchelf` 符号与 SONAME
+修正、华为 linker 兼容）是互相复用的。
 
-## 💡 提示
+## 许可证
 
-- 使用 `./gradlew --scan` 可以查看详细的构建分析
-- 使用 `./gradlew build --info` 查看详细构建日志
-- 修改 `gradle.properties` 可以调整构建性能
+GPL-3.0。内置的 QEMU、xorriso、e2fsprogs、mtools、ntfs-3g 等均为各自上游许可证，
+构建脚本与补丁全部公开在本仓库，可复现完整产物。
 
-Happy Coding! 🤖✨
+---
+
+## English (short)
+
+MirrorBox is an offline Android disk-image toolbox: inspect, edit and create qcow2 images
+**without booting a VM**, convert between qcow2 / vmdk / vhdx / vdi / raw, and author ISOs.
+It ships a cross-compiled native toolchain (qemu-img, e2fsprogs, mtools, ntfsprogs, xorriso)
+plus a self-written pure-Kotlin qcow2 engine with copy-on-write safe writes.
+No root, no network permission, no Termux.

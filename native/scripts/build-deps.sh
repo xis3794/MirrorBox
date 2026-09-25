@@ -100,13 +100,16 @@ EOF
   export CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include"
   export LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib"
 
+  # Option names verified against glib 2.76's meson_options.txt:
+  #   features -> disabled, boolean -> false; there is no "documentation"/"introspection"
+  #   option in this release (gobject-introspection is a separate project).
   meson setup "${BUILD_DIR}/glib-build" \
     --cross-file "${BUILD_DIR}/android-cross.ini" \
     --prefix "${PREFIX}" \
     --default-library shared \
-    -Dselinux=disabled -Dxattr=false -Dlibmount=disabled -Dman=false \
-    -Dtests=false -Dglib_debug=disabled -Ddocumentation=false \
-    -Dintrospection=disabled \
+    -Dselinux=disabled -Dxattr=disabled -Dlibmount=disabled -Dlibelf=disabled \
+    -Dman=disabled -Dgtk_doc=false -Dtests=false -Dinstalled_tests=false \
+    -Dnls=disabled -Dglib_debug=disabled -Dmultiarch=false \
     > "${LOG_DIR}/glib-meson.log" 2>&1 || { cat "${LOG_DIR}/glib-meson.log" >&2; return 1; }
   ninja -C "${BUILD_DIR}/glib-build" -j"${JOBS}"
   ninja -C "${BUILD_DIR}/glib-build" install

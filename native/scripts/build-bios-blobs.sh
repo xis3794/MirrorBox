@@ -38,7 +38,7 @@ CFG
 grub-mkimage -O i386-pc -o "${BIOS_DIR}/core.img" \
   -p "(hd0,msdos1)/boot/grub" \
   -c "${WORK}/early.cfg" \
-  biosdisk part_msdos fat ext2 normal ls cat echo test sleep chain \
+  biosdisk part_msdos fat ext2 ntfs normal ls cat echo test sleep chain ntldr \
   search search_fs_file search_label configfile linux serial terminal
 ls -l "${BIOS_DIR}/core.img"
 
@@ -118,10 +118,14 @@ menuentry "probe" {
 menuentry "chainloader +1" {
   chainloader +1
 }
-
 menuentry "chainloader --force bootmgr" {
   chainloader --force /bootmgr
 }
+
+menuentry "ntldr bootmgr (BIOS/Windows7)" {
+  ntldr /bootmgr
+}
+
 
 menuentry "linux kernel" {
   linux /vmlinuz

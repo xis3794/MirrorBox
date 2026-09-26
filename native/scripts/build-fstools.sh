@@ -193,7 +193,7 @@ build_ntfsprogs() {
   # as libmkntfs.so and friends, so "does libmkntfs.so exist" is not a valid cache test here.
   # The stamp lives outside tools/ on purpose: every entry in tools/ must be named lib*.so and be
   # an ELF file (see verify-package.sh).
-  if [[ -f "${OUT_DIR}/${ABI}/.ntfsprogs-ok" ]]; then
+  if [[ -f "${OUT_DIR}/${ABI}/.ntfsprogs-ok-v2" ]]; then
     log "ntfsprogs already built (cached)"
     return 0
   fi
@@ -227,8 +227,34 @@ build_ntfsprogs() {
       warn "lib${prog}.so still links against libntfs-3g.so, which is not shipped"
       exit 1
     fi
-  done
-  touch "${OUT_DIR}/${ABI}/.ntfsprogs-ok"
+done
+
+  # ---------------------------------------------------------------------------------------------
+  # mirrorbox-ntfs-apply：把一棵目录树写进 NTFS 镜像（不挂载、单进程）。
+  #
+  # 这是"释放 WIM 到 NTFS 分区"的关键：普通 App 不能挂 FUSE，wimlib 无法直接写 NTFS 卷；
+  # 而 ntfscp 每个文件起一个进程，十万个文件根本跑不动（实测本工具 ≈900 文件/秒）。
+  #
+  # libntfs-3g 在这个配置下是 noinst 静态库，所以直接用 in-tree 的 .a 链接。
+  # ---------------------------------------------------------------------------------------------
+  local ntfs_lib
+  ntfs_lib="$(find "${BUILD_DIR}/ntfs-3g" -name 'libntfs-3g.a' -print -quit 2>/dev/null || true)"
+  if [[ -z "${ntfs_lib}" ]]; then
+    warn "libntfs-3g.a not found; cannot build mirrorbox-ntfs-apply"
+    exit 1
+  fi
+  log "building mirrorbox-ntfs-apply (ntfs lib: ${ntfs_lib})"
+  "${CC}" ${CFLAGS_COMMON} -Wall -Wextra -Wno-unused-parameter \
+    -I"${BUILD_DIR}/ntfs-3g/include" -I"${BUILD_DIR}/ntfs-3g/include/ntfs-3g" \
+    -o "${BUILD_DIR}/mirrorbox-ntfs-apply" \
+    "${SCRIPT_DIR}/../src/ntfs-apply.c" \
+    "${ntfs_lib}" ${LDFLAGS_COMMON} -lpthread -lm \
+    > "${LOG_DIR}/ntfs-apply-build.log" 2>&1 || {
+      tail -40 "${LOG_DIR}/ntfs-apply-build.log" >&2
+      exit 1
+    }
+  package_tool "mirrorbox-ntfs" "${BUILD_DIR}/mirrorbox-ntfs-apply"
+  touch "${OUT_DIR}/${ABI}/.ntfsprogs-ok-v2"
 }
 
 main() {

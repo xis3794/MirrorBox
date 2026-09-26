@@ -193,7 +193,10 @@ build_ntfsprogs() {
   # as libmkntfs.so and friends, so "does libmkntfs.so exist" is not a valid cache test here.
   # The stamp lives outside tools/ on purpose: every entry in tools/ must be named lib*.so and be
   # an ELF file (see verify-package.sh).
-  if [[ -f "${OUT_DIR}/${ABI}/.ntfsprogs-ok-v2" ]]; then
+  # 缓存戳里带上我们自己的工具源码哈希：改了 ntfs-apply.c 就自动重建，不用手动改版本号。
+  local src_hash
+  src_hash="$(sha256sum "${NATIVE_DIR}/src-mirrorbox/ntfs-apply.c" | cut -c1-8)"
+  if [[ -f "${OUT_DIR}/${ABI}/.ntfsprogs-ok-${src_hash}" ]]; then
     log "ntfsprogs already built (cached)"
     return 0
   fi
@@ -256,7 +259,7 @@ done
       exit 1
     }
   package_tool "mirrorbox-ntfs" "${BUILD_DIR}/mirrorbox-ntfs-apply"
-  touch "${OUT_DIR}/${ABI}/.ntfsprogs-ok-v2"
+  touch "${OUT_DIR}/${ABI}/.ntfsprogs-ok-${src_hash}"
 }
 
 main() {

@@ -84,11 +84,16 @@ object ReleaseOps {
         label: String,
         onLog: (String) -> Unit = {},
         onProgress: ((Long) -> Unit)? = null,
+        installGrub: Boolean = false,
     ): Result {
         val length = entry.sizeBytes
         if (length <= 0) return Result(false, "分区大小无效")
         if (!staging.isDirectory) return Result(false, "待写入目录不存在：${staging.absolutePath}")
         if (!supported(kind)) return Result(false, unsupportedReason(kind))
+        if (installGrub) {
+            // 把 /boot/grub/grub.cfg 一起写进分区，否则 GRUB 起来了但没有菜单（只有命令行）。
+            GrubBoot.injectConfig(context, staging)?.let(onLog)
+        }
 
         val tmpRaw = File(AppPaths.tmp, "release-p${entry.index}-${System.currentTimeMillis()}.raw")
         try {
@@ -142,6 +147,13 @@ object ReleaseOps {
             onLog("③ 稀疏回写变化的簇到镜像 …")
             val rebuild = EditOps.writeBackRebuilt(image, entry.startByte, length, tmpRaw, onProgress, onLog)
             val written = rebuild.result
+            val grubNote = if (installGrub) {
+                val r = GrubBoot.install(context, image)
+                onLog(r.message)
+                if (r.ok) " · GRUB 已安装" else " · GRUB 安装失败：${r.message}"
+            } else {
+                ""
+            }
             return Result(
                 ok = true,
                 message = "已写入分区 ${entry.index}：${kind.label}，变化 ${written.changedClusters} 个簇" +
@@ -149,7 +161,7 @@ object ReleaseOps {
                     if (rebuild.sparse) "，稀疏轨只扫了 ${Fmt.size(rebuild.dataBytes)}）" else "，完整差分轨）",
                 changedClusters = written.changedClusters,
                 bytesWritten = written.bytesWritten,
-            )
+            ).let { it.copy(message = it.message + grubNote) }
         } catch (t: Throwable) {
             return Result(false, "写入分区失败：${t.message}")
         } finally {

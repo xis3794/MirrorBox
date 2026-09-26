@@ -27,6 +27,7 @@ import io.github.xis3794.mirrorbox.core.Fmt
 import io.github.xis3794.mirrorbox.nav.Navigator
 import io.github.xis3794.mirrorbox.ops.BootRecords
 import io.github.xis3794.mirrorbox.ops.EditOps
+import io.github.xis3794.mirrorbox.ops.GrubBoot
 import io.github.xis3794.mirrorbox.ops.PartitionOps
 import io.github.xis3794.mirrorbox.qcow2.disk.Guid
 import io.github.xis3794.mirrorbox.qcow2.disk.MbrType
@@ -67,6 +68,8 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
     var label by remember { mutableStateOf("MIRRORBOX") }
     var bootPath by remember { mutableStateOf("") }
     var bootMessage by remember { mutableStateOf<String?>(null) }
+    val grubReady = remember { GrubBoot.available(context) }
+    val grubCoreKiB = remember { GrubBoot.coreSize(context) / 1024 }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -374,6 +377,50 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                     Spacer(Modifier.height(4.dp))
                 }
                 InfoRow("当前磁盘推荐", BootRecords.recommended(scheme).title)
+
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "真正可启动：GRUB（BIOS）",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "syslinux 的 mbr.bin 只是“跳到活动分区的引导扇区”——分区里没有引导器时 BIOS 会直接报" +
+                        "“no bootable device / 找不到硬盘”。GRUB 会把 core.img 写到 LBA 1 并在分区里放" +
+                        " /boot/grub/grub.cfg（已用 QEMU/SeaBIOS 实测通过），SeaBIOS 下能直接进启动菜单。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GlassButton("安装 GRUB（BIOS）", enabled = !busy && grubReady) {
+                        val msg = if (!grubReady) {
+                            "APK 里没有 core.img（请重装完整包）"
+                        } else {
+                            GrubBoot.install(context, file).also { refresh() }.message
+                        }
+                        bootMessage = msg
+                        status = msg
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    GlassButton("检查启动结构", enabled = !busy) {
+                        val report = GrubBoot.diagnose(context, file).joinToString("\n")
+                        bootMessage = report
+                        status = "启动结构检查（详见 BIOS 引导卡片）"
+                        android.widget.Toast.makeText(context, "启动结构检查完成", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (grubReady) {
+                        "内置 GRUB core.img：${grubCoreKiB} KiB（写入 LBA 1，需要第一个分区起始 ≥ 2048）"
+                    } else {
+                        "未内置 GRUB 引导块：请安装包含 assets/grub 的完整 APK"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (grubReady) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                )
                 bootMessage?.let { msg ->
                     Spacer(Modifier.height(6.dp))
                     Text(

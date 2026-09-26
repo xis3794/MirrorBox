@@ -67,6 +67,7 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
     var label by remember { mutableStateOf("MIRRORBOX") }
     var writeBoot by remember { mutableStateOf(true) }
     var cleanAfterRelease by remember { mutableStateOf(true) }
+    var installGrub by remember { mutableStateOf(true) }
     var bootRecord by remember { mutableStateOf(BootRecords.MBR) }
     var stagingPath by remember { mutableStateOf("") }
     var log by remember { mutableStateOf(emptyList<String>()) }
@@ -397,9 +398,27 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        GlassSelectChip("释放后写入", writeBoot, { writeBoot = !writeBoot })
-                        GlassSelectChip("跳过", !writeBoot, { writeBoot = false })
+                        GlassSelectChip("安装 GRUB（BIOS·可启动）", installGrub, { installGrub = true })
+                        GlassSelectChip("不安装", !installGrub, { installGrub = false })
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "GRUB（推荐）：把 core.img 写到 LBA 1 并注入 /boot/grub/grub.cfg —— 这是 SeaBIOS/QEMU " +
+                            "真正能找到并启动这块盘的方式（已用 QEMU 实测）。syslinux 的 mbr.bin 只是“跳到分区引导扇区”。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        GlassSelectChip("写入 syslinux MBR", writeBoot, { writeBoot = true })
+                        GlassSelectChip("跳过 MBR 代码", !writeBoot, { writeBoot = false })
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "提示：两者可以同时用（先写 GRUB，再覆盖 syslinux MBR 也可以，但只用 GRUB 最稳）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(8.dp))
                     BootRecords.MBR_RECORDS.forEach { record ->
                         val present = BootRecords.available(context, record)
@@ -493,10 +512,12 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                                         onProgress = { done ->
                                             if (done % (64L * 1024 * 1024) < 65536L) append("  回写 ${Fmt.size(done)}/${Fmt.size(entry.sizeBytes)}")
                                         },
+                                        installGrub = installGrub,
                                     )
                                     val summary = if (!release.ok) {
                                         release.message
-                                    } else if (writeBoot) {
+                                    } else if (writeBoot && !installGrub) {
+                                        // 只有没装 GRUB 时才写 syslinux MBR —— 否则会把 GRUB 的 stage1 覆盖掉。
                                         val boot = BootRecords.install(context, img, bootRecord)
                                         append(boot.message)
                                         release.message + " · " + boot.message

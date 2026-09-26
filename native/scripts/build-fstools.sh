@@ -30,11 +30,30 @@ if f.exists():
             raise SystemExit('lib/ext2fs/ismounted.c: cannot find ' + anchor)
         shim = anchor + '''
 
-/* mirrorbox_hasmntopt_shim */
+/* mirrorbox_hasmntopt_shim: match a whole comma separated option (a bare strstr() would also
+ * match "ro" inside "errors=remount-ro" and wrongly report a read/write filesystem as read-only). */
 #if defined(HAVE_MNTENT_H) && defined(__ANDROID__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 26)
 char *hasmntopt(const struct mntent *mnt, const char *opt)
 {
-    return strstr(mnt->mnt_opts, opt);
+    const char *p = mnt->mnt_opts;
+    size_t len = strlen(opt);
+
+    while (p && *p) {
+        while (*p == ',') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        if (!strncmp(p, opt, len) && (p[len] == 0 || p[len] == ',')) {
+            return (char *)p;
+        }
+        p = strchr(p, ',');
+        if (!p) {
+            break;
+        }
+    }
+    return NULL;
 }
 #endif'''
         f.write_text(text.replace(anchor, shim, 1))

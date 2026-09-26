@@ -410,6 +410,32 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                         status = "启动结构检查（详见 BIOS 引导卡片）"
                         android.widget.Toast.makeText(context, "启动结构检查完成", android.widget.Toast.LENGTH_SHORT).show()
                     }
+                    GlassButton(
+                        text = "写入 grub.cfg 到分区 $formatIndex",
+                        enabled = !busy && table?.partitions?.any { it.index == formatIndex } == true,
+                    ) {
+                        val target = table?.partitions?.firstOrNull { it.index == formatIndex }
+                        if (target == null) {
+                            bootMessage = "找不到分区 $formatIndex：请先应用分区表并重新读取"
+                        } else {
+                            scope.launch {
+                                busy = true
+                                bootMessage = "正在写入 /boot/grub/grub.cfg 到分区 ${target.index} …"
+                                val msg = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        GrubBoot.installConfigIntoPartition(
+                                            context, file, target, fsKind,
+                                            onLog = { line -> bootMessage = line },
+                                        )
+                                    }.getOrElse { "写入失败：${it.message}" }
+                                }
+                                bootMessage = msg
+                                status = msg
+                                refresh()
+                                busy = false
+                            }
+                        }
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(

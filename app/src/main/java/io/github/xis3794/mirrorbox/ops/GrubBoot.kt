@@ -1,6 +1,8 @@
 package io.github.xis3794.mirrorbox.ops
 
 import android.content.Context
+import io.github.xis3794.mirrorbox.core.NativeTools
+import io.github.xis3794.mirrorbox.core.ToolRunner
 import io.github.xis3794.mirrorbox.qcow2.Qcow2Image
 import io.github.xis3794.mirrorbox.qcow2.disk.PartitionTableInfo
 import java.io.File
@@ -161,6 +163,73 @@ object GrubBoot {
         |  echo "用 ls 查看分区，例如: ls (hd0,msdos1)/"
         |}
     """.trimMargin()
+
+    /**
+     * 把 `/boot/grub/grub.cfg` 写进**已经存在**的分区（FAT32 / ext4）。
+     *
+     * 走安全轨：提取分区 → 建目录 + 拷文件 → 差分回写（需要与分区等大的临时空间，
+     * 因为要读到分区原有内容）。NTFS 不支持（建议用「释放 WIM」流程，那里会随镜像一起写好）。
+     */
+    suspend fun installConfigIntoPartition(
+        context: Context,
+        image: File,
+        entry: io.github.xis3794.mirrorbox.qcow2.disk.PartitionEntry,
+        kind: EditOps.FsKind,
+        onLog: (String) -> Unit = {},
+        onProgress: ((Long) -> Unit)? = null,
+    ): String {
+        if (kind == EditOps.FsKind.NTFS) {
+            return "NTFS 暂不支持单独写入 grub.cfg（用「释放 WIM」流程会自动写入）"
+        }
+        val stamp = System.currentTimeMillis()
+        val tmp = File(io.github.xis3794.mirrorbox.core.AppPaths.tmp, "grubcfg-p${entry.index}-$stamp.raw")
+        val cfgFile = File(io.github.xis3794.mirrorbox.core.AppPaths.tmp, "grub-$stamp.cfg")
+        try {
+            onLog("① 提取分区 ${entry.index}（需要一个与分区等大的临时副本）")
+            if (!EditOps.extractRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)) {
+                return "无法提取分区 ${entry.index}（空间不足？）"
+            }
+            cfgFile.writeText(
+                runCatching { context.assets.open("$ASSET_DIR/grub.cfg").use { it.bufferedReader().readText() } }
+                    .getOrDefault(fallbackConfig()),
+            )
+            onLog("② 写入 /boot/grub/grub.cfg")
+            when (kind) {
+                EditOps.FsKind.FAT32 -> {
+                    // 目录可能已存在：mmd 失败无所谓，继续拷贝。
+                    ToolRunner.run(context, NativeTools.MMD, listOf("-i", tmp.absolutePath, "::/boot"), onLine = onLog)
+                    ToolRunner.run(context, NativeTools.MMD, listOf("-i", tmp.absolutePath, "::/boot/grub"), onLine = onLog)
+                    val copy = ToolRunner.run(
+                        context, NativeTools.MCOPY,
+                        listOf("-o", "-i", tmp.absolutePath, cfgFile.absolutePath, "::/boot/grub/grub.cfg"),
+                        onLine = onLog,
+                    )
+                    if (!copy.success) return "mcopy 写入失败：${copy.lines.lastOrNull().orEmpty()}"
+                }
+                EditOps.FsKind.EXT4 -> {
+                    ToolRunner.run(context, NativeTools.DEBUGFS, listOf("-w", "-R", "mkdir /boot", tmp.absolutePath), onLine = onLog)
+                    ToolRunner.run(context, NativeTools.DEBUGFS, listOf("-w", "-R", "mkdir /boot/grub", tmp.absolutePath), onLine = onLog)
+                    val write = ToolRunner.run(
+                        context, NativeTools.DEBUGFS,
+                        listOf("-w", "-R", "write ${cfgFile.absolutePath} /boot/grub/grub.cfg", tmp.absolutePath),
+                        onLine = onLog,
+                    )
+                    if (write.lines.any { it.contains("Error", ignoreCase = true) }) {
+                        return "debugfs 写入失败：${write.lines.lastOrNull().orEmpty()}"
+                    }
+                }
+                EditOps.FsKind.NTFS -> return "NTFS 暂不支持"
+            }
+            onLog("③ 差分回写")
+            val written = EditOps.writeBackRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)
+            return "已写入分区 ${entry.index} 的 /boot/grub/grub.cfg（变化 ${written.changedClusters} 个簇）"
+        } catch (t: Throwable) {
+            return "写入 grub.cfg 失败：${t.message}"
+        } finally {
+            tmp.delete()
+            cfgFile.delete()
+        }
+    }
 
     /** 诊断：到底为什么 BIOS 说"找不到硬盘 / 无法启动"。 */
     fun diagnose(context: Context, image: File): List<String> {

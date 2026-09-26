@@ -25,9 +25,13 @@ for f in "${TOOLS_DIR}"/*; do
 done
 
 # No remaining versioned SONAME anywhere in the package.
-if ls "${TOOLS_DIR}"/lib*.so.* >/dev/null 2>&1; then
+# NOTE: nullglob is enabled above, so an unmatched glob collapses to *no* arguments and a bare
+# `ls` would list the current directory instead — which made this check report the repository
+# root as "versioned shared objects". Collect the matches in an array instead.
+versioned=("${TOOLS_DIR}"/lib*.so.*)
+if (( ${#versioned[@]} > 0 )); then
   warn "versioned shared objects still present:"
-  ls "${TOOLS_DIR}"/lib*.so.* >&2
+  printf '  %s\n' "${versioned[@]}" >&2
   FAILED=1
 fi
 

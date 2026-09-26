@@ -188,7 +188,12 @@ PY
 }
 
 build_ntfsprogs() {
-  if [[ -f "${OUT_DIR}/${ABI}/tools/libmkntfs.so" ]]; then
+  # The stamp is only written once every binary has been verified to be a real ELF executable.
+  # An earlier revision of this script packaged libtool wrapper *scripts* (8 KB /bin/sh files)
+  # as libmkntfs.so and friends, so "does libmkntfs.so exist" is not a valid cache test here.
+  # The stamp lives outside tools/ on purpose: every entry in tools/ must be named lib*.so and be
+  # an ELF file (see verify-package.sh).
+  if [[ -f "${OUT_DIR}/${ABI}/.ntfsprogs-ok" ]]; then
     log "ntfsprogs already built (cached)"
     return 0
   fi
@@ -197,12 +202,17 @@ build_ntfsprogs() {
   unpack "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" "${BUILD_DIR}/ntfs-3g"
   cd "${BUILD_DIR}/ntfs-3g"
   # ntfsprogs only: the FUSE mount helper is useless on unrooted Android.
-  ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
+  # The build stays shared so that libntfs-3g.so can travel inside jniLibs; $ORIGIN is burned
+  # into the binaries because that library ends up next to them in nativeLibraryDir.
+  CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include" \
+    LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib -Wl,-rpath,\$ORIGIN" \
+    ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
     --disable-ntfs-3g --enable-ntfsprogs --disable-crypto --disable-nls \
     --enable-shared --disable-static \
     > "${LOG_DIR}/ntfs3g-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/ntfs3g-configure.log" >&2; exit 1; }
   make -j"${JOBS}" > "${LOG_DIR}/ntfs3g-make.log" 2>&1 || { tail -60 "${LOG_DIR}/ntfs3g-make.log" >&2; exit 1; }
 
+  # package_tool() transparently picks the real binary out of .libs/ when libtool left a wrapper.
   package_tool "mkntfs"   "${BUILD_DIR}/ntfs-3g/ntfsprogs/mkntfs"
   package_tool "ntfsls"   "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfsls"
   package_tool "ntfscat"  "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfscat"
@@ -215,7 +225,12 @@ build_ntfsprogs() {
     normalize_so "${f}" > /dev/null
   done
   fix_needed "${PREFIX}/lib"
-  for f in "${PREFIX}"/lib/libntfs-3g.so; do [[ -e "${f}" ]] && package_lib "${f}"; done
+  if [[ ! -f "${PREFIX}/lib/libntfs-3g.so" ]]; then
+    warn "ntfs-3g did not install libntfs-3g.so, which the ntfsprogs binaries need"
+    exit 1
+  fi
+  package_lib "${PREFIX}/lib/libntfs-3g.so"
+  touch "${OUT_DIR}/${ABI}/.ntfsprogs-ok"
 }
 
 main() {

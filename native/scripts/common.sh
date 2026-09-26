@@ -157,10 +157,45 @@ fix_needed() {
   done
 }
 
+# True when $1 starts with the ELF magic number.
+#
+# This exists to catch libtool wrapper *scripts*: libtool leaves a small shell wrapper at
+# <dir>/<name> and the real ELF executable at <dir>/.libs/<name>. Copying the wrapper out of the
+# build tree yields a "tool" that is a few KB of /bin/sh (ntfsprogs came out as 8 KB shells this
+# way) and that cannot run inside the APK at all.
+is_elf() {
+  [[ -f "$1" ]] || return 1
+  [[ "$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d '[:space:]')" == "7f454c46" ]]
+}
+
+# Resolves the real ELF behind a possible libtool wrapper.
+real_binary() {
+  local path="$1"
+  if is_elf "${path}"; then
+    printf '%s' "${path}"
+    return 0
+  fi
+  local alt
+  alt="$(dirname "${path}")/.libs/$(basename "${path}")"
+  if is_elf "${alt}"; then
+    printf '%s' "${alt}"
+    return 0
+  fi
+  printf '%s' "${path}"
+}
+
 # Copies the finished executables into the tool naming convention used by the app
 # (lib<tool>.so) and into the jniLibs staging directory.
+#
+# Fails loudly when the source is not an ELF executable: silently shipping a wrapper script (or a
+# missing binary) produces an APK whose tools cannot run, which is far harder to diagnose.
 package_tool() {
   local name="$1" src="$2"
+  src="$(real_binary "${src}")"
+  if ! is_elf "${src}"; then
+    warn "package_tool: ${src} is not an ELF executable (libtool wrapper left behind?)"
+    return 1
+  fi
   local out="${OUT_DIR}/${ABI}/tools/lib${name}.so"
   cp -f "${src}" "${out}"
   chmod 755 "${out}"
@@ -172,6 +207,10 @@ package_lib() {
   local src="$1"
   local base
   base="$(basename "${src}")"
+  if ! is_elf "${src}"; then
+    warn "package_lib: ${src} is not a shared object"
+    return 1
+  fi
   local out="${OUT_DIR}/${ABI}/tools/${base}"
   cp -f "${src}" "${out}"
   chmod 755 "${out}"

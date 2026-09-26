@@ -14,6 +14,33 @@ build_e2fsprogs() {
     fetch "https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v${E2FSPROGS_VERSION}/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz" "e2fsprogs-${E2FSPROGS_VERSION}.tar.xz"
   unpack "e2fsprogs-${E2FSPROGS_VERSION}.tar.xz" "${BUILD_DIR}/e2fsprogs"
   cd "${BUILD_DIR}/e2fsprogs"
+
+  # bionic only declares hasmntopt() from API 26 onwards and this toolchain targets API 24,
+  # so the one call site (lib/ext2fs/ismounted.c, used to detect a read-only mount) cannot
+  # compile. The shim reproduces bionic's own implementation: a substring search over the
+  # option list of a struct mntent obtained from getmntent() (available since API 21).
+  python3 - <<'PY'
+import pathlib
+f = pathlib.Path('lib/ext2fs/ismounted.c')
+if f.exists():
+    text = f.read_text()
+    if 'mirrorbox_hasmntopt_shim' not in text:
+        anchor = '#include "ext2fsP.h"'
+        if anchor not in text:
+            raise SystemExit('lib/ext2fs/ismounted.c: cannot find ' + anchor)
+        shim = anchor + '''
+
+/* mirrorbox_hasmntopt_shim */
+#if defined(HAVE_MNTENT_H) && defined(__ANDROID__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 26)
+char *hasmntopt(const struct mntent *mnt, const char *opt)
+{
+    return strstr(mnt->mnt_opts, opt);
+}
+#endif'''
+        f.write_text(text.replace(anchor, shim, 1))
+        print('patched lib/ext2fs/ismounted.c: hasmntopt shim for API < 26')
+PY
+
   # Static linking against libext2fs keeps the shipped surface small: only the
   # executables below end up in the APK.
   # NOTE: --disable-libblkid makes configure look for an *external* blkid library

@@ -247,7 +247,7 @@ done
   "${CC}" ${CFLAGS_COMMON} -Wall -Wextra -Wno-unused-parameter \
     -I"${BUILD_DIR}/ntfs-3g/include" -I"${BUILD_DIR}/ntfs-3g/include/ntfs-3g" \
     -o "${BUILD_DIR}/mirrorbox-ntfs-apply" \
-    "${SCRIPT_DIR}/../src/ntfs-apply.c" \
+    "${NATIVE_DIR}/src-mirrorbox/ntfs-apply.c" \
     "${ntfs_lib}" ${LDFLAGS_COMMON} -lpthread -lm \
     > "${LOG_DIR}/ntfs-apply-build.log" 2>&1 || {
       tail -40 "${LOG_DIR}/ntfs-apply-build.log" >&2

@@ -36,13 +36,10 @@ object ReleaseOps {
             get() = "预计写入 ${Fmt.size(requiredBytes)}，可用 ${Fmt.size(freeBytes)}"
     }
 
-    /** FAT 释放通过 mtools 完成；NTFS 逐文件写入太慢，暂不支持。 */
-    fun supported(kind: EditOps.FsKind): Boolean = kind != EditOps.FsKind.NTFS
+    /** 三种文件系统都支持：FAT32（mtools）、ext4（mke2fs -d）、NTFS（mkntfs + mirrorbox-ntfs）。 */
+    fun supported(kind: EditOps.FsKind): Boolean = true
 
-    fun unsupportedReason(kind: EditOps.FsKind): String = when (kind) {
-        EditOps.FsKind.NTFS -> "NTFS 释放暂不支持：ntfscp 逐文件写入一个 Windows 镜像会非常慢；请改用 ext4 或 FAT32"
-        else -> ""
-    }
+    fun unsupportedReason(kind: EditOps.FsKind): String = ""
 
     /**
      * @param partitionBytes 目标分区大小（完整提取时临时副本要这么大）
@@ -92,7 +89,7 @@ object ReleaseOps {
         if (!supported(kind)) return Result(false, unsupportedReason(kind))
         if (installGrub) {
             // 把 /boot/grub/grub.cfg 一起写进分区，否则 GRUB 起来了但没有菜单（只有命令行）。
-            GrubBoot.injectConfig(context, staging)?.let(onLog)
+            GrubBoot.injectConfig(context, staging, kind, label)?.let(onLog)
         }
 
         val tmpRaw = File(AppPaths.tmp, "release-p${entry.index}-${System.currentTimeMillis()}.raw")
@@ -141,7 +138,30 @@ object ReleaseOps {
                         onLog("   已写入 ${child.name}（$done/${entries.size}）")
                     }
                 }
-                EditOps.FsKind.NTFS -> return Result(false, unsupportedReason(kind))
+                EditOps.FsKind.NTFS -> {
+                    val mkfs = ToolRunner.run(
+                        context,
+                        NativeTools.MKNTFS,
+                        listOf("-f", "-F", "-L", label.take(32).ifBlank { "WINDOWS" }, tmpRaw.absolutePath),
+                        onLine = onLog,
+                    )
+                    if (!mkfs.success) {
+                        return Result(false, "mkntfs 失败：${mkfs.lines.lastOrNull().orEmpty()}")
+                    }
+                    if (staging.listFiles().orEmpty().isEmpty()) {
+                        return Result(false, "待写入目录是空的：${staging.absolutePath}")
+                    }
+                    onLog("  用 mirrorbox-ntfs 写入目录树（单进程，≈900 文件/秒）…")
+                    val apply = ToolRunner.run(
+                        context,
+                        NativeTools.NTFS_APPLY,
+                        EditOps.ntfsApplyArgs(tmpRaw, staging),
+                        onLine = onLog,
+                    )
+                    if (!apply.success) {
+                        return Result(false, "写入 NTFS 失败（退出码 ${apply.exitCode}）：${apply.lines.lastOrNull().orEmpty()}")
+                    }
+                }
             }
 
             onLog("③ 稀疏回写变化的簇到镜像 …")

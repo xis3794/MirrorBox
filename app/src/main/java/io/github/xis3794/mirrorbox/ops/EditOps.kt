@@ -288,8 +288,14 @@ object EditOps {
     fun mkfsCommand(kind: FsKind, target: File, label: String): Pair<NativeTool, List<String>> = when (kind) {
         FsKind.EXT4 -> NativeTools.MKE2FS to listOf("-t", "ext4", "-F", "-L", label.take(16).ifBlank { "MIRRORBOX" }, target.absolutePath)
         FsKind.FAT32 -> NativeTools.MKFS_FAT to listOf("-F", "32", "-n", label.take(11).ifBlank { "MIRRORBOX" }, target.absolutePath)
-        FsKind.NTFS -> NativeTools.MKNTFS to listOf("-f", "-L", label.take(32), target.absolutePath)
+        // -F 强制（目标是普通文件），-f 快速格式化；mkntfs 写出的 VBR 不是 Windows 引导扇区，
+        // 所以 Windows 的 BIOS 引导要靠 GRUB 的 ntldr 命令（见 GrubBoot）。
+        FsKind.NTFS -> NativeTools.MKNTFS to listOf("-f", "-F", "-L", label.take(32).ifBlank { "WINDOWS" }, target.absolutePath)
     }
+
+    /** 把「待写入目录」灌进 NTFS 分区（用我们的 in-process 写入器，不挂载）。 */
+    fun ntfsApplyArgs(target: File, sourceDir: File): List<String> =
+        listOf(target.absolutePath, sourceDir.absolutePath)
 
     suspend fun format(context: Context, kind: FsKind, target: File, label: String): ImageOps.ToolResultSnapshot {
         val (tool, args) = mkfsCommand(kind, target, label)

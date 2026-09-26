@@ -100,13 +100,16 @@ object GrubBoot {
     fun injectConfig(
         context: Context,
         staging: File,
+        fsKind: EditOps.FsKind? = null,
+        @Suppress("UNUSED_PARAMETER") label: String? = null,
     ): String? {
-        val config = buildConfigFromDirectory(context, staging)
+        val config = buildConfigFromDirectory(context, staging, fsKind)
         val dir = File(staging, "boot/grub")
         dir.mkdirs()
         return runCatching {
             File(dir, "grub.cfg").writeText(config)
-            "已写入 /boot/grub/grub.cfg（按目录里实际存在的 bootmgr/vmlinuz 生成菜单）"
+            "已写入 /boot/grub/grub.cfg（按目录里实际存在的 bootmgr/vmlinuz 生成菜单" +
+                if (fsKind == EditOps.FsKind.NTFS) "；NTFS 上 Windows 走 ntldr 加载 bootmgr）" else "）"
         }.getOrNull()
     }
 
@@ -119,12 +122,19 @@ object GrubBoot {
      *    绕开 GRUB 的 0x55AA 校验（否则就会出现 “error: invalid signature.”）；
      *  - 最后一项是带提示的命令行，方便用户在 `grub>` 里自己 `ls` 排查。
      */
-    fun buildConfig(context: Context, available: Collection<String>): String {
+    fun buildConfig(
+        context: Context,
+        available: Collection<String>,
+        fsKind: EditOps.FsKind? = null,
+    ): String {
         fun has(name: String) = available.any { it.equals(name, ignoreCase = true) }
         val kernel = listOf("vmlinuz", "bzImage", "kernel").firstOrNull { has(it) }
         val initrd = listOf("initrd.img", "initrd", "initramfs.img").firstOrNull { has(it) }
         val bootmgr = has("bootmgr") || has("BOOTMGR")
         val efi = available.any { it.contains("bootx64.efi", ignoreCase = true) }
+        // NTFS 分区上 mkntfs 写的 VBR 只是"这不是启动盘"，绝不能用 chainloader +1；
+        // Windows 必须走 GRUB 的 ntldr 命令，由它自己解析 NTFS 并加载 bootmgr。
+        val windowsViaNtldr = bootmgr && fsKind == EditOps.FsKind.NTFS
 
         return buildString {
             // 菜单标题刻意用英文：core.img 里没有 unicode.pf2 字体，中文在 VGA/串口下会变成方框。
@@ -132,28 +142,36 @@ object GrubBoot {
             appendLine("insmod part_msdos")
             appendLine("insmod fat")
             appendLine("insmod ext2")
+            appendLine("insmod ntfs")
             appendLine("insmod chain")
+            appendLine("insmod ntldr")
             appendLine("set timeout=15")
             appendLine("set default=0")
             appendLine()
-            appendLine("menuentry \"(1) Boot this partition's VBR  [chainloader +1]\" {")
+            if (windowsViaNtldr) {
+                appendLine("menuentry \"(1) Windows bootmgr via ntldr  [BIOS, NTFS]\" {")
+                appendLine("  ntldr /bootmgr")
+                appendLine("}")
+                appendLine()
+            }
+            appendLine("menuentry \"(2) Boot this partition's VBR  [chainloader +1]\" {")
             appendLine("  chainloader +1")
             appendLine("}")
             appendLine()
-            if (bootmgr) {
-                appendLine("menuentry \"(2) Windows bootmgr  [chainloader --force /bootmgr]\" {")
+            if (bootmgr && !windowsViaNtldr) {
+                appendLine("menuentry \"(3) Windows bootmgr  [chainloader --force /bootmgr]\" {")
                 appendLine("  chainloader --force /bootmgr")
                 appendLine("}")
                 appendLine()
             }
             if (kernel != null) {
-                appendLine("menuentry \"(2) Linux kernel  [/$kernel]\" {")
+                appendLine("menuentry \"(4) Linux kernel  [/$kernel]\" {")
                 appendLine("  linux /$kernel")
                 if (initrd != null) appendLine("  initrd /$initrd")
                 appendLine("}")
                 appendLine()
             }
-            appendLine("menuentry \"(3) GRUB command line (diagnostics)\" {")
+            appendLine("menuentry \"(5) GRUB command line (diagnostics)\" {")
             appendLine("  echo \"ls = list disks ; ls (hd0,msdos1)/ = list partition ; cat (hd0,msdos1)/boot/grub/grub.cfg\"")
             appendLine("}")
             if (efi) {
@@ -165,13 +183,17 @@ object GrubBoot {
     }
 
     /** 从「待写入目录」生成配置（释放 WIM / 格式化分区时用）。 */
-    fun buildConfigFromDirectory(context: Context, staging: File): String {
+    fun buildConfigFromDirectory(
+        context: Context,
+        staging: File,
+        fsKind: EditOps.FsKind? = null,
+    ): String {
         val names = ArrayList<String>()
         runCatching {
             staging.listFiles()?.forEach { names.add(it.name) }
             File(staging, "EFI/Boot").listFiles()?.forEach { names.add("EFI/Boot/${it.name}") }
         }
-        return buildConfig(context, names)
+        return buildConfig(context, names, fsKind)
     }
 
     private fun fallbackConfig(): String = """
@@ -203,7 +225,8 @@ object GrubBoot {
         onProgress: ((Long) -> Unit)? = null,
     ): String {
         if (kind == EditOps.FsKind.NTFS) {
-            return "NTFS 暂不支持单独写入 grub.cfg（用「释放 WIM」流程会自动写入）"
+            // NTFS 也支持：用我们自己的写入器把 /boot/grub/grub.cfg 灌进提取出来的 raw。
+            return installConfigIntoNtfs(context, image, entry, onLog, onProgress)
         }
         val stamp = System.currentTimeMillis()
         val tmp = File(io.github.xis3794.mirrorbox.core.AppPaths.tmp, "grubcfg-p${entry.index}-$stamp.raw")
@@ -213,7 +236,7 @@ object GrubBoot {
             if (!EditOps.extractRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)) {
                 return "无法提取分区 ${entry.index}（空间不足？）"
             }
-            cfgFile.writeText(buildConfig(context, probePartition(context, tmp, kind, onLog)))
+            cfgFile.writeText(buildConfig(context, probePartition(context, tmp, kind, onLog), kind))
             onLog("② 写入 /boot/grub/grub.cfg")
             when (kind) {
                 EditOps.FsKind.FAT32 -> {
@@ -239,7 +262,7 @@ object GrubBoot {
                         return "debugfs 写入失败：${write.lines.lastOrNull().orEmpty()}"
                     }
                 }
-                EditOps.FsKind.NTFS -> return "NTFS 暂不支持"
+                EditOps.FsKind.NTFS -> return "NTFS 分支已在上方处理"
             }
             onLog("③ 差分回写")
             val written = EditOps.writeBackRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)
@@ -249,6 +272,44 @@ object GrubBoot {
         } finally {
             tmp.delete()
             cfgFile.delete()
+        }
+    }
+
+    /** NTFS 分区：提取 raw → 用 mirrorbox-ntfs 把 boot/grub/grub.cfg 灌进去 → 差分回写。 */
+    private suspend fun installConfigIntoNtfs(
+        context: Context,
+        image: File,
+        entry: io.github.xis3794.mirrorbox.qcow2.disk.PartitionEntry,
+        onLog: (String) -> Unit,
+        onProgress: ((Long) -> Unit)?,
+    ): String {
+        val stamp = System.currentTimeMillis()
+        val tmp = File(io.github.xis3794.mirrorbox.core.AppPaths.tmp, "grubcfg-ntfs-p${entry.index}-$stamp.raw")
+        val stage = File(io.github.xis3794.mirrorbox.core.AppPaths.tmp, "grubcfg-stage-$stamp")
+        try {
+            onLog("① 提取分区 ${entry.index}（NTFS）")
+            if (!EditOps.extractRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)) {
+                return "无法提取分区 ${entry.index}（空间不足？）"
+            }
+            val dir = File(stage, "boot/grub")
+            dir.mkdirs()
+            File(dir, "grub.cfg").writeText(buildConfig(context, probePartition(context, tmp, EditOps.FsKind.NTFS, onLog), EditOps.FsKind.NTFS))
+            onLog("② 用 mirrorbox-ntfs 写入 /boot/grub/grub.cfg")
+            val apply = ToolRunner.run(
+                context,
+                NativeTools.NTFS_APPLY,
+                listOf(tmp.absolutePath, stage.absolutePath),
+                onLine = onLog,
+            )
+            if (!apply.success) return "写入 NTFS 失败：${apply.lines.lastOrNull().orEmpty()}"
+            onLog("③ 差分回写")
+            val written = EditOps.writeBackRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)
+            return "已写入分区 ${entry.index}（NTFS）的 /boot/grub/grub.cfg（变化 ${written.changedClusters} 个簇）"
+        } catch (t: Throwable) {
+            return "写入 NTFS grub.cfg 失败：${t.message}"
+        } finally {
+            tmp.delete()
+            stage.deleteRecursively()
         }
     }
 

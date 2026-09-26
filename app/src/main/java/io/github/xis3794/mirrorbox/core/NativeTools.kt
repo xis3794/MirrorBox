@@ -45,8 +45,19 @@ object NativeTools {
     val MDIR = NativeTool("mdir", "mdir", "libmdir.so", ToolCategory.FILESYSTEM, "列出 FAT 内容", listOf("-V"))
     val MDEL = NativeTool("mdel", "mdel", "libmdel.so", ToolCategory.FILESYSTEM, "删除 FAT 文件", listOf("-V"))
     val MMD = NativeTool("mmd", "mmd", "libmmd.so", ToolCategory.FILESYSTEM, "创建 FAT 目录", listOf("-V"))
-
     val MKNTFS = NativeTool("mkntfs", "mkntfs", "libmkntfs.so", ToolCategory.FILESYSTEM, "创建 NTFS", listOf("--version"))
+
+    /**
+     * 把目录树写进 NTFS 镜像（不挂载、单进程，libntfs-3g）。
+     *
+     * 这是"释放 WIM 到 NTFS 分区"的关键：普通 App 不能挂 FUSE，wimlib 无法直接写 NTFS 卷；
+     * ntfscp 每文件一个进程（十万文件不可用），本工具实测 ≈900 文件/秒。
+     */
+    val NTFS_APPLY = NativeTool(
+        "mirrorbox-ntfs", "mirrorbox-ntfs", "libmirrorbox-ntfs.so", ToolCategory.FILESYSTEM,
+        "把目录树写入 NTFS（快速）", listOf("--help"),
+    )
+
     val NTFSLS = NativeTool("ntfsls", "ntfsls", "libntfsls.so", ToolCategory.FILESYSTEM, "列出 NTFS 内容", listOf("--version"))
     val NTFSCAT = NativeTool("ntfscat", "ntfscat", "libntfscat.so", ToolCategory.FILESYSTEM, "读取 NTFS 文件", listOf("--version"))
     val NTFSCP = NativeTool("ntfscp", "ntfscp", "libntfscp.so", ToolCategory.FILESYSTEM, "写入 NTFS 文件", listOf("--version"))
@@ -64,7 +75,7 @@ object NativeTools {
         QEMU_IMG, QEMU_IO,
         MKE2FS, E2FSCK, DEBUGFS, DUMPE2FS, RESIZE2FS, TUNE2FS,
         MKFS_FAT, FSCK_FAT, MCOPY, MDIR, MDEL, MMD,
-        MKNTFS, NTFSLS, NTFSCAT, NTFSCP, NTFSFIX,
+        MKNTFS, NTFSLS, NTFSCAT, NTFSCP, NTFSFIX, NTFS_APPLY,
         XORRISO,
         WIMLIB,
     )

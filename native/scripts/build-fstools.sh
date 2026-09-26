@@ -202,34 +202,32 @@ build_ntfsprogs() {
   unpack "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" "${BUILD_DIR}/ntfs-3g"
   cd "${BUILD_DIR}/ntfs-3g"
   # ntfsprogs only: the FUSE mount helper is useless on unrooted Android.
-  # The build stays shared so that libntfs-3g.so can travel inside jniLibs; $ORIGIN is burned
-  # into the binaries because that library ends up next to them in nativeLibraryDir.
+  # The build must be STATIC. libntfs-3g/Makefile.am declares libntfs-3g.la as
+  # noinst_LTLIBRARIES whenever ntfs-3g itself is disabled, so a shared build links the tools
+  # against an *uninstalled* libntfs-3g.so that never reaches jniLibs — and libtool hides that
+  # behind a wrapper script, so the build looks successful while every tool is unusable.
   CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include" \
-    LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib -Wl,-rpath,\$ORIGIN" \
+    LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib" \
     ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
     --disable-ntfs-3g --enable-ntfsprogs --disable-crypto --disable-nls \
-    --enable-shared --disable-static \
+    --disable-shared --enable-static \
     > "${LOG_DIR}/ntfs3g-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/ntfs3g-configure.log" >&2; exit 1; }
   make -j"${JOBS}" > "${LOG_DIR}/ntfs3g-make.log" 2>&1 || { tail -60 "${LOG_DIR}/ntfs3g-make.log" >&2; exit 1; }
 
   # package_tool() transparently picks the real binary out of .libs/ when libtool left a wrapper.
-  package_tool "mkntfs"   "${BUILD_DIR}/ntfs-3g/ntfsprogs/mkntfs"
-  package_tool "ntfsls"   "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfsls"
-  package_tool "ntfscat"  "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfscat"
-  package_tool "ntfscp"   "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfscp"
-  package_tool "ntfsfix"  "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfsfix"
-  package_tool "ntfsinfo" "${BUILD_DIR}/ntfs-3g/ntfsprogs/ntfsinfo"
-
-  for f in "${PREFIX}"/lib/libntfs-3g.so*; do
-    [[ -e "${f}" ]] || continue
-    normalize_so "${f}" > /dev/null
+  for prog in mkntfs ntfsls ntfscat ntfscp ntfsfix ntfsinfo; do
+    package_tool "${prog}" "${BUILD_DIR}/ntfs-3g/ntfsprogs/${prog}"
   done
-  fix_needed "${PREFIX}/lib"
-  if [[ ! -f "${PREFIX}/lib/libntfs-3g.so" ]]; then
-    warn "ntfs-3g did not install libntfs-3g.so, which the ntfsprogs binaries need"
-    exit 1
-  fi
-  package_lib "${PREFIX}/lib/libntfs-3g.so"
+
+  # Regression guard for the trap described above: a shared build would leave every tool with
+  # DT_NEEDED=libntfs-3g.so, which is not shipped, so nothing would load on device.
+  for prog in mkntfs ntfsls ntfscat ntfscp ntfsfix ntfsinfo; do
+    if command -v llvm-readelf > /dev/null 2>&1 && \
+       llvm-readelf -d "${OUT_DIR}/${ABI}/tools/lib${prog}.so" 2>/dev/null | grep -q 'libntfs-3g'; then
+      warn "lib${prog}.so still links against libntfs-3g.so, which is not shipped"
+      exit 1
+    fi
+  done
   touch "${OUT_DIR}/${ABI}/.ntfsprogs-ok"
 }
 

@@ -34,17 +34,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.github.xis3794.mirrorbox.core.AppPaths
+import io.github.xis3794.mirrorbox.core.CrashReporter
 import io.github.xis3794.mirrorbox.core.Fmt
 import io.github.xis3794.mirrorbox.core.NativeTools
 import io.github.xis3794.mirrorbox.core.Prefs
 import io.github.xis3794.mirrorbox.nav.Navigator
 import io.github.xis3794.mirrorbox.nav.Screen
+import io.github.xis3794.mirrorbox.ops.GuestFsOps
 import io.github.xis3794.mirrorbox.ui.components.GlassSelectChip
 import io.github.xis3794.mirrorbox.ui.components.InfoRow
 import io.github.xis3794.mirrorbox.ui.components.ScreenHeader
 import io.github.xis3794.mirrorbox.ui.components.SectionTitle
 import io.github.xis3794.mirrorbox.ui.glass.GlassButton
 import io.github.xis3794.mirrorbox.ui.glass.GlassCard
+import java.io.File
 
 @Composable
 fun SettingsScreen(nav: Navigator) {
@@ -57,6 +60,7 @@ fun SettingsScreen(nav: Navigator) {
     var allFilesAccess by remember { mutableStateOf(AppPaths.hasAllFilesAccess()) }
     var toolDir by remember { mutableStateOf(Prefs.externalToolDir.orEmpty()) }
     var version by remember { mutableStateOf("") }
+    var diagStatus by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffectOnce {
         version = withContextIo {
@@ -208,6 +212,52 @@ fun SettingsScreen(nav: Navigator) {
                     GlassButton("清空工具缓存") {
                         NativeTools.clearCache()
                         nav.push(Screen.SelfCheck())
+                    }
+                }
+            }
+
+            GlassCard(Modifier.fillMaxWidth()) {
+                Text("诊断", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(6.dp))
+                val crashFile = remember { CrashReporter.lastCrashFile() }
+                diagStatus?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(6.dp))
+                }
+                if (crashFile == null) {
+                    Text(
+                        "没有崩溃记录。若应用闪退，堆栈会自动写到 ${AppPaths.logs.absolutePath}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "上次崩溃：${crashFile.name}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    val crashText = remember(crashFile) { runCatching { crashFile.readText() }.getOrDefault("") }
+                    Text(
+                        crashText.lines().take(14).joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GlassButton("导出到下载目录") {
+                            val dest = GuestFsOps.publicExportDir()
+                                ?: File(AppPaths.externalRoot(), "logs").apply { mkdirs() }
+                            val out = File(dest, crashFile.name)
+                            val ok = runCatching { crashFile.copyTo(out, overwrite = true) }.isSuccess
+                            diagStatus = if (ok) "已导出到 ${out.absolutePath}" else "导出失败"
+                        }
+                        GlassButton("清除记录") {
+                            CrashReporter.clearLastCrash()
+                            diagStatus = "已清除崩溃记录"
+                        }
                     }
                 }
             }

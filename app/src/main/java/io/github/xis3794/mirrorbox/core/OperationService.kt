@@ -19,15 +19,23 @@ class OperationService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "镜像匣"
-        ensureChannel(this)
-        val notification: Notification = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("镜像匣 · 任务运行中")
-            .setContentText(title)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .build()
-        startForeground(NOTIFICATION_ID, notification)
+        // 前台服务只是"保活"，绝不能因为它自己失败而把整个 App 拖崩：
+        // Android 12+ 的 startForeground 限制、通知渠道/权限问题都会抛异常。
+        val started = runCatching {
+            ensureChannel(this)
+            val notification: Notification = Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle("镜像匣 · 任务运行中")
+                .setContentText(title)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .build()
+            startForeground(NOTIFICATION_ID, notification)
+        }.isSuccess
+        if (!started) {
+            // 起不了前台服务就直接退出（任务本身已经在跑，不影响结果）。
+            runCatching { stopSelf() }
+        }
         return START_NOT_STICKY
     }
 

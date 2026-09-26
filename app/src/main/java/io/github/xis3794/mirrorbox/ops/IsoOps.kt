@@ -21,15 +21,30 @@ object IsoOps {
         val bootLoadSize: Int = 4,
         /** isohybrid 用的 MBR（内置 assets/boot/isohdpfx.bin），让 ISO 能从 U 盘以 BIOS 方式启动。 */
         val hybridMbr: File? = null,
+        /**
+         * 源文件名按 UTF-8 解释。
+         *
+         * App 内的工具环境是 `LC_ALL=C`，若不显式声明，xorriso 会按 ASCII 处理源文件名 ——
+         * 中文名会被写成 `_`。显式声明后中文在 Joliet（UCS-2）与 Rock Ridge（UTF-8）里都能保留。
+         */
+        val utf8Names: Boolean = true,
     )
 
     fun buildCreateArgs(sourceDir: File, output: File, options: IsoOptions): List<String> {
         val args = mutableListOf("-as", "mkisofs", "-o", output.absolutePath)
+        if (options.utf8Names) {
+            args.add("-input-charset")
+            args.add("utf-8")
+        }
         if (options.joliet) {
             args.add("-J")
             args.add("-joliet-long")
         }
         if (options.rockRidge) args.add("-R")
+        if (options.utf8Names) {
+            args.add("-output-charset")
+            args.add("utf-8")
+        }
         if (options.volumeLabel.isNotBlank()) {
             args.add("-V")
             args.add(options.volumeLabel.take(32))

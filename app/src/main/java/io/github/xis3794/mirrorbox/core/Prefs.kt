@@ -73,4 +73,9 @@ object Prefs {
     var onboardingDone: Boolean
         get() = sp.getBoolean("onboarding_done", false)
         set(value) = sp.edit().putBoolean("onboarding_done", value).apply()
+
+    /** 上一次未捕获异常对应的崩溃日志路径（由 [CrashReporter] 写入）。 */
+    var lastCrashPath: String?
+        get() = sp.getString("last_crash_path", null)
+        set(value) = sp.edit().putString("last_crash_path", value).apply()
 }

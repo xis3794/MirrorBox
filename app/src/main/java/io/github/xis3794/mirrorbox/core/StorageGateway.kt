@@ -125,6 +125,40 @@ object StorageGateway {
 
     fun delete(file: File): Boolean = file.delete()
 
+    /**
+     * 递归把一个 SAF 目录树（`OpenDocumentTree` 返回的 tree uri）拷贝进 [destDir]。
+     *
+     * 用于「ISO 源目录」：xorriso 只能读真实路径，所以选中的文件夹要先落到应用目录里。
+     * @return 拷贝的文件数 to 字节数；失败返回 null
+     */
+    fun importTreeFromUri(context: Context, treeUri: Uri, destDir: File): Pair<Int, Long>? = runCatching {
+        val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri) ?: return null
+        destDir.mkdirs()
+        var files = 0
+        var bytes = 0L
+
+        fun copyInto(dir: androidx.documentfile.provider.DocumentFile, target: File) {
+            target.mkdirs()
+            for (child in dir.listFiles()) {
+                val name = child.name ?: continue
+                if (name.startsWith(".")) continue
+                val out = File(target, name)
+                if (child.isDirectory) {
+                    copyInto(child, out)
+                } else {
+                    val stream = context.contentResolver.openInputStream(child.uri) ?: continue
+                    stream.use { input ->
+                        out.outputStream().use { sink -> bytes += copyStream(input, sink) }
+                    }
+                    files++
+                }
+            }
+        }
+
+        copyInto(root, destDir)
+        files to bytes
+    }.getOrNull()
+
     fun rename(file: File, newName: String): File? {
         val target = File(file.parentFile, newName)
         return if (file.renameTo(target)) target else null

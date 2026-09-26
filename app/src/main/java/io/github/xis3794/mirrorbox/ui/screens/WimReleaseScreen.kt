@@ -93,10 +93,11 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
     val wimFile = remember(wimPath) { wimPath.trim().takeIf { it.isNotBlank() }?.let { File(it) } }
     val partitions = table?.partitions.orEmpty()
     val targetEntry = partitions.firstOrNull { it.index == targetPartition }
-    val stagingDir = remember(wimPath, stagingPath) {
-        stagingPath.trim().takeIf { it.isNotBlank() }?.let { File(it) }
-            ?: File(File(AppPaths.externalRoot(), "releases"), (wimFile?.nameWithoutExtension ?: "wim") + "-img")
+    val stagingResult = remember(wimPath, stagingPath) {
+        val typed = stagingPath.trim().takeIf { it.isNotBlank() }?.let { File(it) }
+        WimOps.safeStagingDir(typed, wimFile?.nameWithoutExtension ?: "wim")
     }
+    val stagingDir = stagingResult.first
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         ScreenHeader(
@@ -277,12 +278,23 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                     value = stagingPath,
                     onValueChange = { stagingPath = it },
                     singleLine = true,
-                    label = { Text("展开目录（留空用默认）") },
+                    label = { Text("展开目录（留空用默认；必须在应用内部存储）") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(4.dp))
                 InfoRow("实际目录", stagingDir.absolutePath)
                 InfoRow("目录体积", Fmt.size(AppPaths.sizeOfTree(stagingDir)))
+                stagingResult.second?.let { note ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Windows 镜像里有符号链接（如 Documents and Settings）和大量硬链接，" +
+                        "共享存储（/sdcard、Android/data）不允许应用创建链接，所以展开目录必须在应用内部存储。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 if (image == null) {
                     Spacer(Modifier.height(8.dp))

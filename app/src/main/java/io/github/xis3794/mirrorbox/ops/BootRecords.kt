@@ -73,7 +73,6 @@ object BootRecords {
         val out = File(dir, asset)
         return runCatching { out.writeBytes(bytes); out }.getOrNull()
     }
-
     /** 按磁盘方案推荐默认记录。 */
     fun recommended(scheme: String): Record =
         if (scheme.equals("GPT", ignoreCase = true)) GPT_MBR else MBR

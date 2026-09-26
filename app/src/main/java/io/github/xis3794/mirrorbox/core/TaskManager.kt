@@ -68,8 +68,16 @@ object TaskManager {
             logFile = logFileFor(id).absolutePath,
         )
         _tasks.value = listOf(item) + _tasks.value
-        runCatching { OperationService.start(appContext, title) }
-        scope.launch { execute(item, tool, args, cwd, parseProgress, onFinish) }
+        // 短任务（例如 qemu-img create，几十毫秒）根本不该起前台服务：既省电，
+        // 也避开 Android 12+ 对 startForegroundService 的各种限制（闪退的一大嫌疑）。
+        scope.launch {
+            kotlinx.coroutines.delay(3000)
+            val stillRunning = _tasks.value.any { it.id == id && it.status == TaskStatus.RUNNING }
+            if (stillRunning) OperationService.start(appContext, title)
+        }
+        scope.launch {
+            runCatching { execute(item, tool, args, cwd, parseProgress, onFinish) }
+        }
         return id
     }
 
@@ -105,26 +113,29 @@ object TaskManager {
             processes.remove(item.id)
         }
 
-        val cancelled = _tasks.value.firstOrNull { it.id == item.id }?.status == TaskStatus.CANCELLED
-        val ok = exitCode == 0 && failure == null && !cancelled
-        var finalItem: TaskItem? = null
-        update(item.id) { current ->
-            val updated = current.copy(
-                status = when {
-                    cancelled -> TaskStatus.CANCELLED
-                    ok -> TaskStatus.SUCCESS
-                    else -> TaskStatus.FAILED
-                },
-                exitCode = exitCode,
-                finishedAt = System.currentTimeMillis(),
-                progress = if (ok) 100 else current.progress,
-                error = failure ?: if (ok) null else "退出码 $exitCode",
-            )
-            finalItem = updated
-            updated
+        // 收尾也全部包住：这里任何异常都会变成未捕获异常把 App 带崩。
+        runCatching {
+            val cancelled = _tasks.value.firstOrNull { it.id == item.id }?.status == TaskStatus.CANCELLED
+            val ok = exitCode == 0 && failure == null && !cancelled
+            var finalItem: TaskItem? = null
+            update(item.id) { current ->
+                val updated = current.copy(
+                    status = when {
+                        cancelled -> TaskStatus.CANCELLED
+                        ok -> TaskStatus.SUCCESS
+                        else -> TaskStatus.FAILED
+                    },
+                    exitCode = exitCode,
+                    finishedAt = System.currentTimeMillis(),
+                    progress = if (ok) 100 else current.progress,
+                    error = failure ?: if (ok) null else "退出码 $exitCode",
+                )
+                finalItem = updated
+                updated
+            }
+            finalItem?.let { onFinish?.invoke(it) }
+            OperationService.stopIfIdle(appContext, _tasks.value)
         }
-        finalItem?.let { onFinish?.invoke(it) }
-        OperationService.stopIfIdle(appContext, _tasks.value)
     }
 
     fun cancel(id: Long) {

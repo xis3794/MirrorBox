@@ -53,6 +53,7 @@ fun IsoStudioScreen(nav: Navigator) {
     val scope = rememberCoroutineScope()
 
     val sourceDir = remember { File(AppPaths.externalRoot(), "iso-src").apply { mkdirs() } }
+    var customSource by remember { mutableStateOf("") }
     var files by remember { mutableStateOf(emptyList<File>()) }
     var label by remember { mutableStateOf("MIRRORBOX") }
     var joliet by remember { mutableStateOf(true) }
@@ -63,11 +64,18 @@ fun IsoStudioScreen(nav: Navigator) {
     var outputName by remember { mutableStateOf("mirrorbox") }
     var isos by remember { mutableStateOf(emptyList<StorageGateway.ImageFile>()) }
     var message by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    // 真正被 xorriso 读取的源目录：可以指向任意真实路径（比如 /sdcard/Download/MyIso）。
+    val effectiveSource = remember(customSource, sourceDir) {
+        customSource.trim().takeIf { it.isNotBlank() }?.let { File(it) } ?: sourceDir
+    }
 
     fun refresh() {
         scope.launch {
             val src = withContext(Dispatchers.IO) {
-                sourceDir.listFiles()?.toList()?.sortedBy { it.name } ?: emptyList()
+                val dir = if (customSource.isNotBlank()) File(customSource.trim()) else sourceDir
+                dir.listFiles()?.toList()?.sortedBy { it.name } ?: emptyList()
             }
             val list = withContext(Dispatchers.IO) {
                 StorageGateway.listImages().filter { it.extension == "ISO" }
@@ -85,7 +93,27 @@ fun IsoStudioScreen(nav: Navigator) {
                 withContext(Dispatchers.IO) {
                     uris.forEach { uri -> StorageGateway.importFromUri(context, uri, sourceDir) }
                 }
+                customSource = ""
                 message = "已导入 ${uris.size} 个文件到源目录"
+                refresh()
+            }
+        }
+    }
+
+    // SAF 只能逐个挑文件，选不了文件夹 —— 用 OpenDocumentTree 递归导入整棵目录树。
+    val folderImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                busy = true
+                message = "正在导入文件夹…"
+                val result = withContext(Dispatchers.IO) { StorageGateway.importTreeFromUri(context, uri, sourceDir) }
+                customSource = ""
+                message = if (result != null) {
+                    "已从文件夹导入 ${result.first} 个文件（${Fmt.size(result.second)}）"
+                } else {
+                    "导入文件夹失败（可能没有读取权限）"
+                }
+                busy = false
                 refresh()
             }
         }
@@ -105,15 +133,29 @@ fun IsoStudioScreen(nav: Navigator) {
                 Text("源目录", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    sourceDir.absolutePath,
+                    effectiveSource.absolutePath,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GlassButton("导入文件", icon = Icons.Filled.Add) { importer.launch(arrayOf("*/*")) }
-                    GlassButton("刷新", icon = Icons.Filled.PlayArrow) { refresh() }
+                    GlassButton("选择文件夹", icon = Icons.Filled.Add, enabled = !busy) {
+                        runCatching { folderImporter.launch(null) }
+                    }
+                    GlassButton("导入文件", enabled = !busy) { importer.launch(arrayOf("*/*")) }
+                    GlassButton("刷新", icon = Icons.Filled.PlayArrow, enabled = !busy) { refresh() }
                 }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = customSource,
+                    onValueChange = {
+                        customSource = it
+                        refresh()
+                    },
+                    singleLine = true,
+                    label = { Text("或直接指定真实目录（如 /sdcard/Download/MyIso，需所有文件访问）") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Spacer(Modifier.height(10.dp))
                 if (files.isEmpty()) {
                     Text(
@@ -178,6 +220,14 @@ fun IsoStudioScreen(nav: Navigator) {
                     )
                     Switch(checked = rockRidge, onCheckedChange = { rockRidge = it })
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "中文文件名：保存在 Joliet（UCS-2）与 Rock Ridge（UTF-8）里，已默认开启。" +
+                        "只读 ISO9660 主名称的工具（部分 Android 文件管理器）会显示成 `_`；" +
+                        "Windows 资源管理器、7-Zip、Linux 挂载都能正常显示中文。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             GlassCard(Modifier.fillMaxWidth()) {
@@ -236,7 +286,7 @@ fun IsoStudioScreen(nav: Navigator) {
                 onClick = {
                     val target = AppPaths.uniqueFile(AppPaths.iso, outputName, ".iso")
                     IsoOps.submitCreate(
-                        sourceDir = sourceDir,
+                        sourceDir = effectiveSource,
                         output = target,
                         options = IsoOps.IsoOptions(
                             volumeLabel = label,

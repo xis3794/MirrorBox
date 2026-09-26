@@ -147,6 +147,28 @@ object WimOps {
     /** 校验 WIM 是否完整（较慢，可选）。 */
     suspend fun verify(context: Context, wim: File, onLine: (String) -> Unit = {}): ToolResult =
         ToolRunner.run(context, NativeTools.WIMLIB, listOf("verify", wim.absolutePath), onLine = onLine)
+    /**
+     * 释放 WIM 的暂存目录必须是**支持符号链接/硬链接**的文件系统。
+     *
+     * Windows 镜像里存在符号链接（典型的是 `Documents and Settings` → `Users`）和大量硬链接，
+     * 而共享存储（`/sdcard`、`Android/data/...`）不允许普通应用创建链接 —— 之前正是在那里报
+     * `Can't create symbolic link ... Permission denied`（wimlib 退出码 35），而且 wimlib 没有
+     * 「跳过链接」的开关。所以这里强制把暂存目录放到应用内部存储。
+     *
+     * @return 实际使用的目录 to 需要提示用户的说明（无需替换时为 null）
+     */
+    fun safeStagingDir(requested: File?, wimName: String): Pair<File, String?> {
+        val base = File(File(io.github.xis3794.mirrorbox.core.AppPaths.work, "releases"), "$wimName-img")
+        if (requested == null) return base to null
+        if (supportsLinks(requested)) return requested to null
+        return base to "该路径在共享存储上（不支持符号链接/硬链接），已改用应用内部目录：${base.absolutePath}"
+    }
+
+    /** 内部存储（/data/...）才能创建链接；共享存储不行。 */
+    fun supportsLinks(dir: File): Boolean {
+        val path = dir.absolutePath
+        return path.startsWith("/data/") || path.startsWith("/data/user/") || path.startsWith("/data/local/")
+    }
 
     /** 释放结果的体积统计。 */
     fun treeStats(dir: File): Pair<Long, Long> {

@@ -16,10 +16,13 @@ build_e2fsprogs() {
   cd "${BUILD_DIR}/e2fsprogs"
   # Static linking against libext2fs keeps the shipped surface small: only the
   # executables below end up in the APK.
+  # NOTE: --disable-libblkid makes configure look for an *external* blkid library
+  # (util-linux) and abort with "external blkid library not found" when there is none.
+  # e2fsprogs' own private copy is self-contained and is what we want here.
   ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
     --disable-elf-shlibs --disable-fuse2fs --disable-defrag \
     --disable-e2initrd-helper --disable-nls --disable-uuidd \
-    --disable-libblkid --enable-libuuid \
+    --enable-libblkid --enable-libuuid \
     > "${LOG_DIR}/e2fsprogs-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/e2fsprogs-configure.log" >&2; exit 1; }
   make -j"${JOBS}" > "${LOG_DIR}/e2fsprogs-make.log" 2>&1 || { tail -60 "${LOG_DIR}/e2fsprogs-make.log" >&2; exit 1; }
 

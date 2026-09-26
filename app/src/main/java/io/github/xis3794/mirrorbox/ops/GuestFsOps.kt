@@ -255,8 +255,21 @@ object GuestFsOps {
         }.getOrDefault(false)
     }
 
-    /** 宿主同步目录（导出文件的默认位置）。 */
+    /** 宿主同步目录（导出文件的默认位置，应用专属外部目录，无需权限）。 */
     fun exportDir(): File = File(io.github.xis3794.mirrorbox.core.AppPaths.externalRoot(), "extracted").apply { mkdirs() }
+
+    /**
+     * 文件管理器直接能看到的导出目录（`/sdcard/Download/MirrorBox`）。
+     *
+     * 只有拿到「所有文件访问」权限时才可用，否则返回 null —— Android 11+ 起
+     * `Android/data/<包名>` 对其他应用不可见，导出到这里的文件用户很难找到。
+     */
+    fun publicExportDir(): File? {
+        if (!io.github.xis3794.mirrorbox.core.AppPaths.hasAllFilesAccess()) return null
+        val dir = File("/sdcard/Download/MirrorBox")
+        if (!dir.exists() && !dir.mkdirs()) return null
+        return if (dir.canWrite()) dir else null
+    }
 
     fun newRawFile(entry: PartitionEntry): File = File(
         io.github.xis3794.mirrorbox.core.AppPaths.tmp,

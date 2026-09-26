@@ -242,6 +242,11 @@ fun GuestFilesScreen(nav: Navigator, path: String) {
                     Spacer(Modifier.height(6.dp))
                     InfoRow("已选", selected?.display ?: "（未选择文件）")
                     InfoRow("导出目录", GuestFsOps.exportDir().absolutePath)
+                    InfoRow(
+                        "下载目录",
+                        GuestFsOps.publicExportDir()?.absolutePath
+                            ?: "不可用（去「设置」开启「所有文件访问」后可用 /sdcard/Download/MirrorBox）",
+                    )
                     Spacer(Modifier.height(8.dp))
                     GlassButton("复制出来", enabled = !busy && selected != null) {
                         val item = selected
@@ -253,10 +258,21 @@ fun GuestFilesScreen(nav: Navigator, path: String) {
                                 val result = withContext(Dispatchers.IO) {
                                     runCatching {
                                         val error = active.copyOut(GuestFsOps.childPath(currentPath, item.name), GuestFsOps.exportDir()) { append(it) }
-                                        if (error == null) {
-                                            "已导出到 ${GuestFsOps.exportDir().absolutePath}/${item.name}"
-                                        } else {
+                                        if (error != null) {
                                             "导出失败：$error"
+                                        } else {
+                                            val exported = File(GuestFsOps.exportDir(), item.name)
+                                            val public = GuestFsOps.publicExportDir()
+                                            if (public != null) {
+                                                val copied = runCatching { exported.copyTo(File(public, item.name), overwrite = true) }.isSuccess
+                                                if (copied) {
+                                                    "已导出到 ${public.absolutePath}/${item.name}（同时保留在应用目录）"
+                                                } else {
+                                                    "已导出到 ${exported.absolutePath}（复制到下载目录失败）"
+                                                }
+                                            } else {
+                                                "已导出到 ${exported.absolutePath}（开启「所有文件访问」可直接导出到 /sdcard/Download）"
+                                            }
                                         }
                                     }.getOrElse { "导出异常：${it.message}" }
                                 }

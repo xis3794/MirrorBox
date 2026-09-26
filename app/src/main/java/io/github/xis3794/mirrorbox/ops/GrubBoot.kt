@@ -127,7 +127,8 @@ object GrubBoot {
         val efi = available.any { it.contains("bootx64.efi", ignoreCase = true) }
 
         return buildString {
-            appendLine("# MirrorBox 生成的 GRUB 配置（BIOS）")
+            // 菜单标题刻意用英文：core.img 里没有 unicode.pf2 字体，中文在 VGA/串口下会变成方框。
+            appendLine("# MirrorBox 生成的 GRUB 配置（BIOS）—— 标题用英文，避免缺字体时显示成方框")
             appendLine("insmod part_msdos")
             appendLine("insmod fat")
             appendLine("insmod ext2")
@@ -135,25 +136,25 @@ object GrubBoot {
             appendLine("set timeout=15")
             appendLine("set default=0")
             appendLine()
-            appendLine("menuentry \"① 启动本分区引导扇区（chainloader +1）\" {")
+            appendLine("menuentry \"(1) Boot this partition's VBR  [chainloader +1]\" {")
             appendLine("  chainloader +1")
             appendLine("}")
             appendLine()
             if (bootmgr) {
-                appendLine("menuentry \"② Windows bootmgr（chainloader --force /bootmgr）\" {")
+                appendLine("menuentry \"(2) Windows bootmgr  [chainloader --force /bootmgr]\" {")
                 appendLine("  chainloader --force /bootmgr")
                 appendLine("}")
                 appendLine()
             }
             if (kernel != null) {
-                appendLine("menuentry \"② Linux 内核（/$kernel）\" {")
+                appendLine("menuentry \"(2) Linux kernel  [/$kernel]\" {")
                 appendLine("  linux /$kernel")
                 if (initrd != null) appendLine("  initrd /$initrd")
                 appendLine("}")
                 appendLine()
             }
-            appendLine("menuentry \"③ GRUB 命令行（排查用）\" {")
-            appendLine("  echo \"ls 列磁盘；ls (hd0,msdos1)/ 列分区；cat (hd0,msdos1)/boot/grub/grub.cfg 看配置\"")
+            appendLine("menuentry \"(3) GRUB command line (diagnostics)\" {")
+            appendLine("  echo \"ls = list disks ; ls (hd0,msdos1)/ = list partition ; cat (hd0,msdos1)/boot/grub/grub.cfg\"")
             appendLine("}")
             if (efi) {
                 appendLine()

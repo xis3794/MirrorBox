@@ -14,29 +14,46 @@ if [[ -f "${OUT_DIR}/${ABI}/tools/libxorriso.so" ]]; then
 fi
 cd "${BUILD_DIR}/xorriso"
 
-# libisofs/util.c asks nl_langinfo(CODESET) for the local charset used in ISO/Joliet name
-# conversion. bionic only declares that from API 26 onwards and Android's charset is always UTF-8.
+# xorriso asks nl_langinfo(CODESET) for the local charset used in ISO/Joliet name conversion
+# (libisofs/util.c, xorriso/text_io.c and xorriso/lib_mgt.c). bionic declares that function only
+# from API 26 onwards and Android's charset is always UTF-8, so every user gets the same shim.
+# The definition must be "static": two of those files end up in the same binary.
 python3 - <<'PY'
 import pathlib
-f = pathlib.Path('libisofs/util.c')
-if not f.exists():
-    raise SystemExit('xorriso: libisofs/util.c not found')
-text = f.read_text()
-if 'mirrorbox_android_nl_langinfo' not in text:
-    anchor = '#include <langinfo.h>'
-    if anchor not in text:
-        raise SystemExit('xorriso: cannot find ' + anchor)
-    shim = anchor + '''
+
+marker = 'mirrorbox_android_nl_langinfo'
+shim = '''
 
 /* mirrorbox_android_nl_langinfo: see the note in build-xorriso.sh */
 #if defined(__ANDROID__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 26)
-char *nl_langinfo(nl_item item)
+#include <langinfo.h>
+static char *nl_langinfo(nl_item item)
 {
     return item == CODESET ? (char *)"UTF-8" : (char *)"";
 }
 #endif'''
-    f.write_text(text.replace(anchor, shim, 1))
-    print('patched libisofs/util.c: nl_langinfo shim for API < 26')
+
+patched = 0
+for path in sorted(pathlib.Path('.').rglob('*.c')):
+    text = path.read_text(errors='ignore')
+    if 'nl_langinfo' not in text or marker in text:
+        continue
+    anchor = '#include <langinfo.h>'
+    if anchor not in text:
+        # Fall back to the first include line so the definition still precedes every call.
+        anchor = ''
+        for line in text.splitlines():
+            if line.startswith('#include'):
+                anchor = line
+                break
+        if not anchor:
+            raise SystemExit('cannot find an include anchor in ' + str(path))
+    path.write_text(text.replace(anchor, anchor + shim, 1))
+    print('patched ' + str(path) + ': nl_langinfo shim for API < 26')
+    patched += 1
+
+if patched == 0:
+    raise SystemExit('xorriso: no nl_langinfo users found to patch')
 PY
 
 # xorriso brings its own libburn/libisofs; optical device support is irrelevant

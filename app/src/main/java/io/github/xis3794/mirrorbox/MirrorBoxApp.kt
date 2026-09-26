@@ -235,7 +235,7 @@ private fun QuickActionOverlay(onDismiss: () -> Unit, onAction: (Screen) -> Unit
                 QuickActionItem("制作 ISO", "从文件夹生成 ISO，可配置 BIOS/EFI 引导") { onAction(Screen.IsoStudio) }
                 QuickActionItem("释放 WIM", "DISM++ 式展开 Windows 镜像，可直接写入分区") { onAction(Screen.WimRelease()) }
                 QuickActionItem("导入镜像文件", "从系统文件选择器导入到工作区") { onAction(Screen.Library) }
-                QuickActionItem("原生工具自检", "检查 21 个原生工具是否可执行") { onAction(Screen.SelfCheck()) }
+                QuickActionItem("原生工具自检", "检查内置原生工具链是否可执行") { onAction(Screen.SelfCheck()) }
             }
             Spacer(Modifier.height(14.dp))
             GlassButton("取消", modifier = Modifier.fillMaxWidth()) { onDismiss() }

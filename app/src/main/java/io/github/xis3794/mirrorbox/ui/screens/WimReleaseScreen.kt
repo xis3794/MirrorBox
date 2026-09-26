@@ -278,7 +278,8 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "先展开到目录（必须），再可选地把目录写进镜像里的某个分区。" +
-                        "写入走稀疏轨：不复制分区旧数据，只把 mkfs/mcopy 真正写过的数据段回写进 qcow2，" +
+                        "写入走稀疏轨：不复制分区旧数据，只把工具真正写过的数据段回写进 qcow2" +
+                        "（ext4 用 mke2fs -d、FAT32 用 mcopy、NTFS 用 mkntfs + mirrorbox-ntfs），" +
                         "临时占用与分区大小无关（通常几十 MB 起）。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -404,11 +405,11 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "GRUB（推荐）：把 core.img 写到 LBA 1 并注入 /boot/grub/grub.cfg —— 这是 SeaBIOS/QEMU " +
-                            "真正能找到并启动这块盘的方式（已用 QEMU 实测）。syslinux 的 mbr.bin 只是“跳到分区引导扇区”。",
+                            "真正能找到并启动这块盘的方式（已用 QEMU 实测）。Windows 7 走 ntldr 加载 bootmgr，" +
+                            "所以即使 mkntfs 写的 VBR 不是 Windows 引导扇区也能启动。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         GlassSelectChip("写入 syslinux MBR", writeBoot, { writeBoot = true })
                         GlassSelectChip("跳过 MBR 代码", !writeBoot, { writeBoot = false })

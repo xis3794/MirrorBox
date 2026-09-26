@@ -35,6 +35,29 @@ if (( ${#versioned[@]} > 0 )); then
   FAILED=1
 fi
 
+# Every DT_NEEDED of every shipped object must be resolved either by Android's own libraries or
+# by another file in this same directory (the tools are extracted side by side into
+# nativeLibraryDir).
+#
+# This is the guard for the "noinst library was never installed" class of bug: the link succeeds,
+# the build goes green, and then every affected tool fails to load on device. It is what caught
+# the ntfsprogs and xorriso shared builds.
+if command -v llvm-readelf > /dev/null 2>&1; then
+  for f in "${TOOLS_DIR}"/*; do
+    base="$(basename "${f}")"
+    while IFS= read -r lib; do
+      [[ -n "${lib}" ]] || continue
+      case "${lib}" in
+        libc.so|libm.so|libdl.so|liblog.so|libz.so|libandroid.so) continue ;;
+      esac
+      if [[ ! -e "${TOOLS_DIR}/${lib}" ]]; then
+        warn "${base} needs ${lib}, which is not bundled"
+        FAILED=1
+      fi
+    done < <(llvm-readelf -d "${f}" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')
+  done
+fi
+
 count=$(ls "${TOOLS_DIR}"/*.so 2>/dev/null | wc -l)
 log "package contains ${count} files"
 total=$(du -sh "${TOOLS_DIR}" | cut -f1)

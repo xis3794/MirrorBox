@@ -1,0 +1,23 @@
+MirrorBox 内置引导记录（assets/boot）
+===================================
+
+这些文件是 syslinux 项目的引导数据（x86 机器码 / 数据），与 Android 平台无关，仅作为"字节块"被应用
+写进磁盘镜像或交给 xorriso。
+
+来源与版本：
+  软件包  syslinux-common 3:6.04~git20190206.bf6db5b4+dfsg1-3ubuntu3 (Ubuntu/Debian)
+          isolinux        3:6.04~git20190206.bf6db5b4+dfsg1-3ubuntu3 (Ubuntu/Debian)
+  原文件  /usr/lib/syslinux/mbr/mbr.bin              → boot/mbr.bin
+          /usr/lib/syslinux/mbr/gptmbr.bin           → boot/gptmbr.bin
+          /usr/lib/ISOLINUX/isohdpfx.bin             → boot/isohdpfx.bin
+          /usr/lib/ISOLINUX/isolinux.bin             → boot/isolinux.bin
+          /usr/lib/syslinux/modules/bios/ldlinux.c32 → boot/ldlinux.c32
+
+许可：syslinux 以 GNU General Public License v2 或更高版本发布（部分文件为 LGPLv2+）。
+本项目的其余部分为 GPL-3.0；随附这些未修改的二进制数据不改变其原有许可。
+上游：https://www.kernel.org/pub/linux/utils/boot/syslinux/
+
+说明：
+  mbr.bin / gptmbr.bin 由 MirrorBox 写入镜像的第 0 扇区前 440 字节（分区表与 0x55AA 保持不变）。
+  isohdpfx.bin 用于 xorriso 的 -isohybrid-mbr，使 ISO 可从 U 盘以 BIOS 方式启动。
+  isolinux.bin + ldlinux.c32 用于 ISO 的 El Torito BIOS 引导条目（ldlinux.c32 需位于 ISO 根目录）。

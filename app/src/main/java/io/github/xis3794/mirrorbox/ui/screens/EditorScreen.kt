@@ -106,6 +106,8 @@ fun EditorScreen(nav: Navigator, path: String) {
                 )
                 Spacer(Modifier.height(10.dp))
                 GlassButton("打开分区编辑器") { nav.push(Screen.Partitions(path)) }
+                Spacer(Modifier.height(8.dp))
+                GlassButton("释放 WIM 到分区（DISM++ 式）") { nav.push(Screen.WimRelease(path)) }
             }
 
             GlassCard(Modifier.fillMaxWidth()) {

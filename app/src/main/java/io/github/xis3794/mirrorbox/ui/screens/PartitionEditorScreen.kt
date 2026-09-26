@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.github.xis3794.mirrorbox.core.Fmt
 import io.github.xis3794.mirrorbox.nav.Navigator
+import io.github.xis3794.mirrorbox.ops.BootRecords
 import io.github.xis3794.mirrorbox.ops.EditOps
 import io.github.xis3794.mirrorbox.ops.PartitionOps
 import io.github.xis3794.mirrorbox.qcow2.disk.Guid
@@ -127,26 +128,31 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                     GlassButton("一键布局") {
                         val layout = PartitionOps.suggestedLayout(diskSize, scheme)
                         if (layout.isEmpty()) {
-                            "磁盘太小，无法创建分区"
+                            status = "磁盘太小，无法创建分区"
                         } else {
                             draft = layout
-                            "已生成建议布局：${layout.size} 个分区（尚未写入）"
+                            status = "已生成建议布局：${layout.size} 个分区（尚未写入）"
                         }
                     }
-                    GlassButton("重新读取", enabled = !busy) { refresh(); "已重新读取分区表" }
+                    GlassButton("重新读取", enabled = !busy) { refresh(); status = "已重新读取分区表" }
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GlassButton("清除分区表", enabled = !busy) {
                         val result = PartitionOps.wipe(file)
                         refresh()
-                        result.message
+                        status = result.message
                     }
                     GlassButton("应用分区表", enabled = !busy && draft.isNotEmpty()) {
                         val result = PartitionOps.applyTable(file, scheme, draft)
                         refresh()
-                        result.message
+                        status = result.message
                     }
+                }
+                Spacer(Modifier.height(8.dp))
+                GlassButton("释放 WIM 到分区", enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    nav.push(io.github.xis3794.mirrorbox.nav.Screen.WimRelease(file.absolutePath))
+                    status = "已打开「释放 WIM」：可把 Windows 镜像展开并写入分区"
                 }
             }
 
@@ -189,15 +195,15 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             GlassButton("删除") {
                                 draft = draft.filterIndexed { i, _ -> i != index }
-                                "已从草稿中删除分区 ${index + 1}"
+                                status = "已从草稿中删除分区 ${index + 1}"
                             }
                             if (!gpt) {
                                 GlassButton("设为活动") {
                                     if (index < 4) {
                                         draft = draft.mapIndexed { i, p -> p.copy(bootable = i == index) }
-                                        "草稿中已把分区 ${index + 1} 设为活动"
+                                        status = "草稿中已把分区 ${index + 1} 设为活动"
                                     } else {
-                                        "MBR 只有前 4 个分区可以设为活动"
+                                        status = "MBR 只有前 4 个分区可以设为活动"
                                     }
                                 }
                             }
@@ -222,7 +228,7 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                         ) {
                             startMib = (space.startLba / PartitionOps.ALIGN_SECTORS).toString()
                             sizeMib = (space.sectorCount / PartitionOps.ALIGN_SECTORS).toString()
-                            "已填入空闲区域"
+                            status = "已填入空闲区域 ${Fmt.size(space.startByte)} 起 ${Fmt.size(space.sizeBytes)}"
                         }
                         Spacer(Modifier.height(6.dp))
                     }
@@ -256,7 +262,7 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                 GlassButton("添加到草稿", enabled = draft.size < if (gpt) 128 else 4) {
                     val startLba = (startMib.toLongOrNull() ?: 0L) * PartitionOps.ALIGN_SECTORS
                     val sectors = (sizeMib.toLongOrNull() ?: 0L) * PartitionOps.ALIGN_SECTORS
-                    when {
+                    status = when {
                         sectors <= 0L -> "请先填写大小"
                         startLba <= 0L -> "请先填写起始位置"
                         startLba + sectors > diskSize / PartitionOps.SECTOR ->
@@ -335,24 +341,43 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                 Text("BIOS 引导", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "把引导记录（syslinux 的 mbr.bin / isohdpfx.bin、ms-sys 或 GRUB stage1，最多 512 字节）" +
-                        "写入 MBR 前 440 字节，分区表与 0x55AA 签名保持不变；没有活动分区时会自动标记第一个分区。",
+                    "内置 syslinux 引导记录，开箱即用（不需要自己准备 mbr.bin）。写入只覆盖 MBR 前 440 字节，" +
+                        "分区表与 0x55AA 签名不变；若没有活动分区，会自动把第一个分区标记为活动。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(8.dp))
+                BootRecords.MBR_RECORDS.forEach { record ->
+                    val present = BootRecords.available(context, record)
+                    GlassButton(
+                        text = if (present) {
+                            "${record.title} · 写入（${record.sizeBytes} B）"
+                        } else {
+                            "${record.title}（APK 中缺失）"
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = present && !busy,
+                    ) {
+                        val result = BootRecords.install(context, file, record)
+                        refresh()
+                        status = "${result.message} · ${record.detail}"
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+                InfoRow("当前磁盘推荐", BootRecords.recommended(scheme).title)
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = bootPath,
                     onValueChange = { bootPath = it },
                     singleLine = true,
-                    label = { Text("引导记录文件路径（如 /sdcard/Download/mbr.bin）") },
+                    label = { Text("或填写自备引导记录（如 /sdcard/Download/mbr.bin）") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GlassButton("写入引导代码", enabled = !busy && bootPath.isNotBlank()) {
+                    GlassButton("写入自定义记录", enabled = !busy && bootPath.isNotBlank()) {
                         val blob = runCatching { File(bootPath.trim()).readBytes() }.getOrNull()
-                        if (blob == null || blob.isEmpty()) {
+                        status = if (blob == null || blob.isEmpty()) {
                             "读不到引导记录：$bootPath"
                         } else {
                             PartitionOps.writeBootCode(file, blob).also { refresh() }.message
@@ -360,7 +385,7 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                     }
                     GlassButton("查看当前引导代码", enabled = !busy) {
                         val code = PartitionOps.readBootCode(file)
-                        if (code == null) {
+                        status = if (code == null) {
                             "无法读取 MBR"
                         } else {
                             val nonZero = code.count { it.toInt() != 0 }

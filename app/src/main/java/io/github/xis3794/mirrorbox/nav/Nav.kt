@@ -20,6 +20,10 @@ sealed interface Screen {
     data class Inspector(val path: String) : Screen
     data class Editor(val path: String) : Screen
     data class Partitions(val path: String) : Screen
+
+    /** DISM++ 式「释放 WIM」；[path] 为可选的目标镜像（为空时只能展开到目录）。 */
+    data class WimRelease(val path: String? = null) : Screen
+
     data class SelfCheck(val placeholder: Boolean = false) : Screen
 }
 

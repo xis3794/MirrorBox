@@ -36,6 +36,7 @@ import io.github.xis3794.mirrorbox.core.Fmt
 import io.github.xis3794.mirrorbox.core.StorageGateway
 import io.github.xis3794.mirrorbox.nav.Navigator
 import io.github.xis3794.mirrorbox.ops.IsoOps
+import io.github.xis3794.mirrorbox.ui.components.GlassSelectChip
 import io.github.xis3794.mirrorbox.ui.components.InfoRow
 import io.github.xis3794.mirrorbox.ui.components.ScreenHeader
 import io.github.xis3794.mirrorbox.ui.glass.GlassButton
@@ -58,6 +59,7 @@ fun IsoStudioScreen(nav: Navigator) {
     var rockRidge by remember { mutableStateOf(true) }
     var bootImage by remember { mutableStateOf("") }
     var efiImage by remember { mutableStateOf("") }
+    var hybridIso by remember { mutableStateOf(true) }
     var outputName by remember { mutableStateOf("mirrorbox") }
     var isos by remember { mutableStateOf(emptyList<StorageGateway.ImageFile>()) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -202,6 +204,22 @@ fun IsoStudioScreen(nav: Navigator) {
                     label = { Text("EFI 引导镜像（如 efi.img）") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "内置引导（开箱即用）：把 syslinux 的 isolinux.bin + ldlinux.c32 放进源目录并生成 isolinux.cfg。" +
+                        "勾选「U 盘可启动」会额外用内置 isohybrid MBR 写入镜像头。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GlassButton("装入内置 ISOLINUX（BIOS）") {
+                        message = IsoOps.installBuiltInBiosBoot(context, sourceDir)
+                        bootImage = "isolinux.bin"
+                        refresh()
+                    }
+                    GlassSelectChip("U 盘可启动", hybridIso, { hybridIso = !hybridIso })
+                }
             }
 
             message?.let {
@@ -226,6 +244,7 @@ fun IsoStudioScreen(nav: Navigator) {
                             rockRidge = rockRidge,
                             bootImage = bootImage.ifBlank { null }?.let { File(sourceDir, it) },
                             efiBootImage = efiImage.ifBlank { null }?.let { File(sourceDir, it) },
+                            hybridMbr = if (hybridIso && bootImage.isNotBlank()) IsoOps.builtInHybridMbr(context) else null,
                         ),
                     )
                     message = "已提交任务：${target.name}"

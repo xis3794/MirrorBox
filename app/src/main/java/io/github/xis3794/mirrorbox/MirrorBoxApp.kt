@@ -58,6 +58,7 @@ import io.github.xis3794.mirrorbox.ui.screens.SelfCheckScreen
 import io.github.xis3794.mirrorbox.ui.screens.SettingsScreen
 import io.github.xis3794.mirrorbox.ui.screens.TasksScreen
 import io.github.xis3794.mirrorbox.ui.screens.ToolsScreen
+import io.github.xis3794.mirrorbox.ui.screens.WimReleaseScreen
 
 @Composable
 fun MirrorBoxApp() {
@@ -92,6 +93,7 @@ fun MirrorBoxApp() {
                     is Screen.Inspector -> InspectorScreen(nav, screen.path)
                     is Screen.Editor -> EditorScreen(nav, screen.path)
                     is Screen.Partitions -> PartitionEditorScreen(nav, screen.path)
+                    is Screen.WimRelease -> WimReleaseScreen(nav, screen.path)
                     is Screen.SelfCheck -> SelfCheckScreen(nav)
                 }
             }
@@ -175,6 +177,7 @@ private fun QuickActionOverlay(onDismiss: () -> Unit, onAction: (Screen) -> Unit
             QuickActionItem("新建 qcow2 镜像", "创建空白磁盘，可选簇大小与预分配") { onAction(Screen.Create) }
             QuickActionItem("格式转换", "qcow2 ↔ vmdk / vhdx / vdi / raw …") { onAction(Screen.Convert) }
             QuickActionItem("制作 ISO", "从文件夹生成 ISO，可配置引导") { onAction(Screen.IsoStudio) }
+            QuickActionItem("释放 WIM", "DISM++ 式展开 Windows 镜像，可直接写入分区") { onAction(Screen.WimRelease()) }
             QuickActionItem("导入镜像文件", "从系统文件选择器导入到工作区") { onAction(Screen.Library) }
         }
     }

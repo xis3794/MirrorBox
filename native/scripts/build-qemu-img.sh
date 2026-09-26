@@ -75,6 +75,12 @@ fi
 
 # bionic has no makecontext/swapcontext, so QEMU's ucontext coroutine backend cannot work on
 # Android; sigaltstack is the available (and thread-safe) alternative.
+#
+# The vhost stack is switched off below: libvhost-user (pulled in by qemu-storage-daemon, which
+# --enable-tools builds) ships Linux UAPI copies of virtio_ring.h / virtio_types.h whose include
+# guards differ from bionic's, so both definitions are visible at once and clang aborts with
+# "redefinition of 'vring_desc'" / "typedef redefinition ... ('uint64_t' vs '__u64')".
+# qemu-img needs none of it.
 ./configure \
   --cross-prefix="${TRIPLE}-" \
   --cc="${CC}" --cxx="${CXX}" \
@@ -86,6 +92,12 @@ fi
   --disable-docs \
   --disable-guest-agent \
   --disable-werror \
+  --disable-vhost-user \
+  --disable-vhost-user-blk-server \
+  --disable-vhost-vdpa \
+  --disable-vhost-kernel \
+  --disable-vhost-net \
+  --disable-vhost-crypto \
   --disable-sdl --disable-gtk --disable-vnc \
   --disable-linux-aio --disable-linux-io-uring \
   --disable-capstone \
@@ -95,7 +107,12 @@ fi
   --extra-cflags="-I${PREFIX}/include" \
   > "${LOG_DIR}/qemu-configure.log" 2>&1 || { tail -60 "${LOG_DIR}/qemu-configure.log" >&2; exit 1; }
 
-make -j"${JOBS}" qemu-img qemu-io > "${LOG_DIR}/qemu-make.log" 2>&1 \
+# Build only the two binaries we actually ship. QEMU's in-tree `GNUmakefile` delegates
+# `make <target>` to the build dir but only forwards the *target list* through a wrapper whose
+# default rule runs ninja without any target — i.e. `make qemu-img qemu-io` silently builds the
+# entire tree (581 ninja targets, including the libvhost-user subproject that aborts on bionic).
+# Invoking ninja directly with explicit targets keeps the build small and predictable.
+ninja -C "${BUILD_DIR}/qemu/build" -j"${JOBS}" qemu-img qemu-io > "${LOG_DIR}/qemu-make.log" 2>&1 \
   || { tail -80 "${LOG_DIR}/qemu-make.log" >&2; exit 1; }
 
 package_tool "qemu-img" "${BUILD_DIR}/qemu/build/qemu-img"

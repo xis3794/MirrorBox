@@ -52,6 +52,17 @@ export PKG_CONFIG_LIBDIR="${PKG_CONFIG_PATH}"
 export CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include -DANDROID"
 export LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib -Wl,-rpath,\$ORIGIN"
 
+# QEMU generates a meson cross file that looks for '<triple>-pkg-config' (e.g.
+# aarch64-linux-android-pkg-config) and refuses to continue when it is missing
+# ("Pkg-config for machine host machine not found"). Ship that name in a private bin dir.
+mkdir -p "${OUT_DIR}/${ABI}/bin"
+for name in "${TRIPLE}-pkg-config" "aarch64-linux-android-pkg-config"; do
+  cp -f "${SCRIPT_DIR}/pkg-config-wrapper.sh" "${OUT_DIR}/${ABI}/bin/${name}"
+  chmod +x "${OUT_DIR}/${ABI}/bin/${name}"
+done
+export PATH="${OUT_DIR}/${ABI}/bin:${PATH}"
+log "pkg-config shim installed: ${OUT_DIR}/${ABI}/bin/${TRIPLE}-pkg-config"
+
 # bionic has no makecontext/swapcontext, so QEMU's ucontext coroutine backend cannot work on
 # Android; sigaltstack is the available (and thread-safe) alternative.
 ./configure \

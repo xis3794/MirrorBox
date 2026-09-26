@@ -100,67 +100,90 @@ object GrubBoot {
     fun injectConfig(
         context: Context,
         staging: File,
-        kernel: String? = null,
-        initrd: String? = null,
     ): String? {
-        val config = buildConfig(context, staging, kernel, initrd) ?: return null
+        val config = buildConfigFromDirectory(context, staging)
         val dir = File(staging, "boot/grub")
         dir.mkdirs()
         return runCatching {
             File(dir, "grub.cfg").writeText(config)
-            "已写入 /boot/grub/grub.cfg"
+            "已写入 /boot/grub/grub.cfg（按目录里实际存在的 bootmgr/vmlinuz 生成菜单）"
         }.getOrNull()
     }
 
-    fun buildConfig(
-        context: Context,
-        staging: File,
-        kernel: String? = null,
-        initrd: String? = null,
-    ): String? {
-        val foundKernel = kernel ?: listOf("vmlinuz", "bzImage", "kernel")
-            .firstOrNull { File(staging, it).isFile }
-        val foundInitrd = initrd ?: listOf("initrd.img", "initrd", "initramfs.img")
-            .firstOrNull { File(staging, it).isFile }
-        val hasBootmgr = File(staging, "bootmgr").isFile
+    /**
+     * 生成 `/boot/grub/grub.cfg`。
+     *
+     * 关键点（针对真实踩到的坑）：
+     *  - 第一项永远是 `chainloader +1`（引导本分区引导扇区）——**必定可用**，等价于传统 MBR 启动；
+     *  - `bootmgr` / `vmlinuz` 这些项只有在**探测到文件存在**时才写进去，并且用 `--force`
+     *    绕开 GRUB 的 0x55AA 校验（否则就会出现 “error: invalid signature.”）；
+     *  - 最后一项是带提示的命令行，方便用户在 `grub>` 里自己 `ls` 排查。
+     */
+    fun buildConfig(context: Context, available: Collection<String>): String {
+        fun has(name: String) = available.any { it.equals(name, ignoreCase = true) }
+        val kernel = listOf("vmlinuz", "bzImage", "kernel").firstOrNull { has(it) }
+        val initrd = listOf("initrd.img", "initrd", "initramfs.img").firstOrNull { has(it) }
+        val bootmgr = has("bootmgr") || has("BOOTMGR")
+        val efi = available.any { it.contains("bootx64.efi", ignoreCase = true) }
 
-        if (foundKernel == null && !hasBootmgr) {
-            // 镜像里没有内核也没有 bootmgr：给一个"能进菜单/命令行"的配置，用户自己补文件。
-            return runCatching { context.assets.open("$ASSET_DIR/grub.cfg").use { it.bufferedReader().readText() } }
-                .getOrNull() ?: fallbackConfig()
-        }
         return buildString {
-            appendLine("# MirrorBox 生成的 GRUB 配置")
-            appendLine("set timeout=5")
+            appendLine("# MirrorBox 生成的 GRUB 配置（BIOS）")
+            appendLine("insmod part_msdos")
+            appendLine("insmod fat")
+            appendLine("insmod ext2")
+            appendLine("insmod chain")
+            appendLine("set timeout=15")
             appendLine("set default=0")
             appendLine()
-            if (foundKernel != null) {
-                appendLine("menuentry \"启动 Linux（/$foundKernel）\" {")
-                appendLine("  linux /$foundKernel")
-                if (foundInitrd != null) appendLine("  initrd /$foundInitrd")
-                appendLine("}")
-                appendLine()
-            }
-            if (hasBootmgr) {
-                appendLine("menuentry \"从硬盘引导（Windows bootmgr）\" {")
-                appendLine("  insmod chain")
-                appendLine("  chainloader /bootmgr")
-                appendLine("}")
-                appendLine()
-            }
-            appendLine("menuentry \"GRUB 命令行\" {")
-            appendLine("  echo \"用 ls 查看分区，例如: ls (hd0,msdos1)/\"")
+            appendLine("menuentry \"① 启动本分区引导扇区（chainloader +1）\" {")
+            appendLine("  chainloader +1")
             appendLine("}")
+            appendLine()
+            if (bootmgr) {
+                appendLine("menuentry \"② Windows bootmgr（chainloader --force /bootmgr）\" {")
+                appendLine("  chainloader --force /bootmgr")
+                appendLine("}")
+                appendLine()
+            }
+            if (kernel != null) {
+                appendLine("menuentry \"② Linux 内核（/$kernel）\" {")
+                appendLine("  linux /$kernel")
+                if (initrd != null) appendLine("  initrd /$initrd")
+                appendLine("}")
+                appendLine()
+            }
+            appendLine("menuentry \"③ GRUB 命令行（排查用）\" {")
+            appendLine("  echo \"ls 列磁盘；ls (hd0,msdos1)/ 列分区；cat (hd0,msdos1)/boot/grub/grub.cfg 看配置\"")
+            appendLine("}")
+            if (efi) {
+                appendLine()
+                appendLine("# 提示：分区里检测到 EFI/ 目录。Windows 在现代设备上走 UEFI 更可靠：")
+                appendLine("#      用 FAT32 分区 + EFI/Boot/bootx64.efi，并在模拟器里选择 UEFI 固件（OVMF）。")
+            }
         }
     }
 
+    /** 从「待写入目录」生成配置（释放 WIM / 格式化分区时用）。 */
+    fun buildConfigFromDirectory(context: Context, staging: File): String {
+        val names = ArrayList<String>()
+        runCatching {
+            staging.listFiles()?.forEach { names.add(it.name) }
+            File(staging, "EFI/Boot").listFiles()?.forEach { names.add("EFI/Boot/${it.name}") }
+        }
+        return buildConfig(context, names)
+    }
+
     private fun fallbackConfig(): String = """
-        |# MirrorBox: 没有找到内核/bootmgr，这里是默认菜单。
-        |set timeout=5
+        |# MirrorBox: 没有探测到内核/bootmgr —— 用最保守的菜单（chainloader +1 一定可用）。
+        |set timeout=15
         |set default=0
         |
-        |menuentry "GRUB 命令行" {
-        |  echo "用 ls 查看分区，例如: ls (hd0,msdos1)/"
+        |menuentry "① 启动本分区引导扇区（chainloader +1）" {
+        |  chainloader +1
+        |}
+        |
+        |menuentry "② GRUB 命令行（排查用）" {
+        |  echo "ls 列磁盘；ls (hd0,msdos1)/ 列分区"
         |}
     """.trimMargin()
 
@@ -189,10 +212,7 @@ object GrubBoot {
             if (!EditOps.extractRange(image, entry.startByte, entry.sizeBytes, tmp, onProgress)) {
                 return "无法提取分区 ${entry.index}（空间不足？）"
             }
-            cfgFile.writeText(
-                runCatching { context.assets.open("$ASSET_DIR/grub.cfg").use { it.bufferedReader().readText() } }
-                    .getOrDefault(fallbackConfig()),
-            )
+            cfgFile.writeText(buildConfig(context, probePartition(context, tmp, kind, onLog)))
             onLog("② 写入 /boot/grub/grub.cfg")
             when (kind) {
                 EditOps.FsKind.FAT32 -> {
@@ -229,6 +249,40 @@ object GrubBoot {
             tmp.delete()
             cfgFile.delete()
         }
+    }
+
+    /** 探测分区根目录里有哪些文件（用来生成"只包含真实存在项"的菜单）。 */
+    private suspend fun probePartition(
+        context: Context,
+        raw: File,
+        kind: EditOps.FsKind,
+        onLine: (String) -> Unit,
+    ): List<String> {
+        val names = ArrayList<String>()
+        when (kind) {
+            EditOps.FsKind.FAT32 -> {
+                val result = ToolRunner.run(context, NativeTools.MDIR, listOf("-i", raw.absolutePath, "-b", "::/"), onLine = onLine)
+                result.lines.forEach { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.startsWith("::")) {
+                        val cleaned = trimmed.removePrefix("::").trimEnd('/').substringAfterLast('/')
+                        if (cleaned.isNotEmpty()) names.add(cleaned)
+                    }
+                }
+            }
+            EditOps.FsKind.EXT4 -> {
+                val result = ToolRunner.run(context, NativeTools.DEBUGFS, listOf("-R", "ls -l /", raw.absolutePath), onLine = onLine)
+                result.lines.forEach { line ->
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size >= 8) names.add(parts.last())
+                }
+            }
+            EditOps.FsKind.NTFS -> {
+                val result = ToolRunner.run(context, NativeTools.NTFSLS, listOf("-p", "/", raw.absolutePath), onLine = onLine)
+                result.lines.forEach { if (it.isNotBlank()) names.add(it.trim()) }
+            }
+        }
+        return names
     }
 
     /** 诊断：到底为什么 BIOS 说"找不到硬盘 / 无法启动"。 */
@@ -274,6 +328,26 @@ object GrubBoot {
             if (looksGrub) "✓ LBA $CORE_LBA 起已有引导器数据（core.img）"
             else "✗ LBA $CORE_LBA 起是空的：没有 core.img，BIOS 无法启动",
         )
+
+        // 分区引导扇区（VBR）：GRUB 的 “chainloader +1” 也需要它有 0x55AA 且不是空的。
+        val boot = active ?: first
+        if (boot != null) {
+            val vbr = runCatching { Qcow2Image.open(image).use { it.readBytes(boot.startByte, 512) } }.getOrNull()
+            if (vbr == null) {
+                lines.add("✗ 读不到分区 ${boot.index} 的引导扇区")
+            } else {
+                val code = (0 until 510).count { vbr[it].toInt() != 0 }
+                val ok = vbr[510].toInt() and 0xff == 0x55 && vbr[511].toInt() and 0xff == 0xAA
+                lines.add(
+                    "· 分区 ${boot.index} 引导扇区：非零 $code/510，" +
+                        if (ok) "签名正常" else "✗ 缺 0x55AA 签名",
+                )
+                if (!ok || code < 16) {
+                    lines.add("  → 该分区里没有引导器（VBR 为空/无效）：GRUB 的 chainloader +1 也会失败。")
+                    lines.add("     解决：把系统写进这个分区（释放 WIM 时勾选“安装 GRUB”），或用 UEFI + FAT32(EFI/Boot/bootx64.efi)。")
+                }
+            }
+        }
         lines.add("提示：MBR 代码只管“跳到分区引导扇区”，分区里必须有引导器（GRUB/bootmgr）才真能启动。")
         return lines
     }

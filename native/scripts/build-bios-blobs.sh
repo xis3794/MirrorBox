@@ -97,11 +97,40 @@ CFG
 mcopy -i "${DISK}@@${PART_OFF}" "${BIOS_DIR}/grub.cfg" ::/boot/grub/grub.cfg
 
 echo "== 6) 在 QEMU/SeaBIOS 里真实启动一次（串口输出作为证据） =="
+# 这份测试配置刻意使用与 App 生成逻辑**完全相同的命令集**（insmod/chainloader +1/
+# chainloader --force/linux/initrd/带中文的 echo），只有它能被 GRUB 正确解析并执行到最后的
+# echo，才说明 App 生成的 grub.cfg 语法没问题。
 cat > "${BIOS_DIR}/grub.cfg" <<'CFG'
 serial --unit=0 --speed=115200
 terminal_output console serial
-echo "MIRRORBOX-GRUB-BOOT-OK"
-sleep 20
+set timeout=1
+set default=0
+insmod part_msdos
+insmod fat
+insmod ext2
+insmod chain
+
+menuentry "probe" {
+  echo "MIRRORBOX-GRUB-BOOT-OK"
+  sleep 20
+}
+
+menuentry "chainloader +1" {
+  chainloader +1
+}
+
+menuentry "chainloader --force bootmgr" {
+  chainloader --force /bootmgr
+}
+
+menuentry "linux kernel" {
+  linux /vmlinuz
+  initrd /initrd.img
+}
+
+menuentry "命令行提示" {
+  echo "ls 列磁盘；ls (hd0,msdos1)/ 列分区；cat (hd0,msdos1)/boot/grub/grub.cfg 看配置"
+}
 CFG
 mcopy -o -i "${DISK}@@${PART_OFF}" "${BIOS_DIR}/grub.cfg" ::/boot/grub/grub.cfg
 

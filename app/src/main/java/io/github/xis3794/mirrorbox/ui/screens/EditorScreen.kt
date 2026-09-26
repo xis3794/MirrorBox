@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import io.github.xis3794.mirrorbox.core.AppPaths
 import io.github.xis3794.mirrorbox.core.Fmt
 import io.github.xis3794.mirrorbox.nav.Navigator
+import io.github.xis3794.mirrorbox.nav.Screen
 import io.github.xis3794.mirrorbox.ops.EditOps
 import io.github.xis3794.mirrorbox.ops.ImageOps
 import io.github.xis3794.mirrorbox.qcow2.disk.PartitionEntry
@@ -93,6 +94,18 @@ fun EditorScreen(nav: Navigator, path: String) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            GlassCard(Modifier.fillMaxWidth()) {
+                Text("分区表", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "创建 / 删除 / 调整分区，格式化分区，写入 MBR 引导代码（BIOS 引导）——全部在应用内完成，不需要 root 或 loop 设备。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                GlassButton("打开分区编辑器") { nav.push(Screen.Partitions(path)) }
             }
 
             GlassCard(Modifier.fillMaxWidth()) {

@@ -19,6 +19,7 @@ sealed interface Screen {
     data object IsoStudio : Screen
     data class Inspector(val path: String) : Screen
     data class Editor(val path: String) : Screen
+    data class Partitions(val path: String) : Screen
     data class SelfCheck(val placeholder: Boolean = false) : Screen
 }
 

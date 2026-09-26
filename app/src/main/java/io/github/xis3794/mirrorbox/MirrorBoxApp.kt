@@ -53,6 +53,7 @@ import io.github.xis3794.mirrorbox.ui.screens.HomeScreen
 import io.github.xis3794.mirrorbox.ui.screens.InspectorScreen
 import io.github.xis3794.mirrorbox.ui.screens.IsoStudioScreen
 import io.github.xis3794.mirrorbox.ui.screens.LibraryScreen
+import io.github.xis3794.mirrorbox.ui.screens.PartitionEditorScreen
 import io.github.xis3794.mirrorbox.ui.screens.SelfCheckScreen
 import io.github.xis3794.mirrorbox.ui.screens.SettingsScreen
 import io.github.xis3794.mirrorbox.ui.screens.TasksScreen
@@ -90,6 +91,7 @@ fun MirrorBoxApp() {
                     is Screen.IsoStudio -> IsoStudioScreen(nav)
                     is Screen.Inspector -> InspectorScreen(nav, screen.path)
                     is Screen.Editor -> EditorScreen(nav, screen.path)
+                    is Screen.Partitions -> PartitionEditorScreen(nav, screen.path)
                     is Screen.SelfCheck -> SelfCheckScreen(nav)
                 }
             }

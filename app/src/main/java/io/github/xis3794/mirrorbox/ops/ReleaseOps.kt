@@ -91,9 +91,31 @@ object ReleaseOps {
             // 把 /boot/grub/grub.cfg 一起写进分区，否则 GRUB 起来了但没有菜单（只有命令行）。
             GrubBoot.injectConfig(context, staging, kind, label)?.let(onLog)
             if (kind == EditOps.FsKind.NTFS) {
-                // Windows：install.wim 里的 BCD 是从原机器继承的，卷号常常对不上本磁盘，
-                // bootmgr 会报 0xC000000E（引导选择失败，因为需要的设备不可访问）。
-                onLog("BCD 检查：${BcdFix.fixInStaging(staging, entry.index)}")
+                // Windows：install.wim 里的 BCD 是从原机器继承的 ——
+                //  文本形式：\Device\HarddiskVolumeN 卷号对不上
+                //  二进制形式：原磁盘签名 + 分区偏移，对不上就是 bootmgr 的 0xC000000E
+                val report = BcdFix.analyzeStaging(staging, entry.startByte, entry.startLba)
+                if (report == null) {
+                    onLog("BCD 检查：镜像里没有 Boot\\BCD（Win7 的 install.wim 有时不含，需要 Win7 安装盘跑「启动修复」/ bcdboot）")
+                } else {
+                    onLog("BCD 检查：${report.summary}")
+                    onLog("BCD 卷号处理：${BcdFix.fixInStaging(staging, entry.index)}")
+                    val sigs = report.signatures
+                    if (sigs.isNotEmpty()) {
+                        val target = sigs.first().expected
+                        val before = BcdFix.currentSignature(image)
+                        if (PartitionOps.setDiskSignature(image, target)) {
+                            onLog(
+                                "磁盘签名已对齐到 BCD 期望值：" +
+                                    String.format("0x%08X → 0x%08X", before, target) + "（只改 MBR 4 字节）",
+                            )
+                        } else {
+                            onLog("磁盘签名写入失败")
+                        }
+                    } else if (report.volumeRefs.isEmpty()) {
+                        onLog("BCD 里没识别到设备项：请用「导出 BCD」把文件发我，或改用 Win7 安装盘的「启动修复」")
+                    }
+                }
             }
         }
 

@@ -202,6 +202,25 @@ object PartitionOps {
         PartitionResult(true, "分区表已写入")
     }.getOrElse { PartitionResult(false, "写入分区表失败：${it.message}") }
 
+    /**
+     * 只把 MBR 里的磁盘签名（bytes 440..443）改成 [signature]，分区表与引导代码保持不动。
+     *
+     * Win7 的 BCD 用「磁盘签名 + 分区偏移」定位系统分区；把镜像照搬到别的盘后签名不匹配，
+     * bootmgr 就报 0xC000000E。把签名改成 BCD 期望的值即可（只写 4 字节）。
+     */
+    fun setDiskSignature(image: File, signature: Long): Boolean = runCatching {
+        Qcow2Image.open(image, writable = true).use { img ->
+            val mbr = img.readBytes(0L, 512)
+            mbr[440] = (signature and 0xff).toByte()
+            mbr[441] = ((signature shr 8) and 0xff).toByte()
+            mbr[442] = ((signature shr 16) and 0xff).toByte()
+            mbr[443] = ((signature shr 24) and 0xff).toByte()
+            img.write(0L, mbr)
+            img.flush()
+        }
+        true
+    }.getOrDefault(false)
+
     /** Marks one MBR partition as active (bootable) and clears the flag on the others. */
     fun setActive(image: File, partitionIndex: Int): PartitionResult = runCatching {
         val table = EditOps.detectPartitionTable(image)

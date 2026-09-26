@@ -386,15 +386,15 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Windows 0xC000000E（引导选择失败，设备不可访问）= BCD 里的卷号与本磁盘不符。" +
-                                "释放时勾选「安装 GRUB」会自动修正；也可以直接修当前分区：",
+                            "Windows 0xC000000E（引导选择失败，设备不可访问）：Win7 的 BCD 通常把系统分区存成" +
+                                "「原磁盘签名 + 分区偏移」的二进制设备项，照搬到别的盘后签名不匹配就会这样。" +
+                                "首选「对齐磁盘签名」（只改 MBR 4 字节）；BCD 若用文本卷号则用「修复卷号」。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            "Windows 里 \\Device\\HarddiskVolumeN 的 N 一般等于分区序号，但按卷枚举顺序来；" +
-                                "如果修完还是 0xC000000E，换个号再试：",
+                            "读取只提取分区开头 64 MiB（不够自动放大），不会占用与分区等大的空间。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -418,17 +418,19 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                                         status = "正在读取分区 ${entryRef.index} 里的 \\Boot\\BCD …"
                                         val report = withContext(Dispatchers.IO) {
                                             runCatching {
-                                                BcdFix.inspectInPartition(context, imgRef, entryRef, onLog = { append(it) })
+                                                BcdFix.analyzeInPartition(context, imgRef, entryRef, onLog = { append(it) })
                                             }.getOrElse {
-                                                BcdFix.Report(emptyList(), emptyList(), "检查失败：${it.message}")
+                                                BcdFix.Report(0, emptyList(), emptyList(), 0L, "", "检查失败：${it.message}")
                                             }
                                         }
                                         status = report.summary
+                                        append("BCD 大小：${report.sizeBytes} 字节")
+                                        append("BCD 头部：\n${report.hexPreview}")
                                         busy = false
                                     }
                                 }
                             }
-                            GlassButton("修复 BCD（→ Volume$bcdVolume）", enabled = !busy) {
+                            GlassButton("对齐磁盘签名（推荐）", enabled = !busy) {
                                 val entryRef = targetEntry
                                 val imgRef = image
                                 if (entryRef == null || imgRef == null) {
@@ -437,14 +439,58 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                                     scope.launch {
                                         busy = true
                                         log = emptyList()
-                                        status = "正在修复分区 ${entryRef.index} 的 BCD（→ Volume$bcdVolume）…"
+                                        status = "正在从 BCD 里读出期望的磁盘签名 …"
                                         val result = withContext(Dispatchers.IO) {
                                             runCatching {
-                                                BcdFix.fixInPartition(context, imgRef, entryRef, bcdVolume, onLog = { append(it) })
+                                                BcdFix.alignDiskSignature(context, imgRef, entryRef, onLog = { append(it) })
+                                            }.getOrElse { "对齐失败：${it.message}" }
+                                        }
+                                        status = result
+                                        android.widget.Toast.makeText(context, result.take(120), android.widget.Toast.LENGTH_LONG).show()
+                                        busy = false
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            GlassButton("修复卷号（→ Volume$bcdVolume）", enabled = !busy) {
+                                val entryRef = targetEntry
+                                val imgRef = image
+                                if (entryRef == null || imgRef == null) {
+                                    status = "请先选择目标分区"
+                                } else {
+                                    scope.launch {
+                                        busy = true
+                                        log = emptyList()
+                                        status = "正在修复分区 ${entryRef.index} 的 BCD 卷号（→ Volume$bcdVolume）…"
+                                        val result = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                BcdFix.fixVolumeInPartition(context, imgRef, entryRef, bcdVolume, onLog = { append(it) })
                                             }.getOrElse { "修复失败：${it.message}" }
                                         }
                                         status = result
                                         android.widget.Toast.makeText(context, result.take(120), android.widget.Toast.LENGTH_LONG).show()
+                                        busy = false
+                                    }
+                                }
+                            }
+                            GlassButton("导出 BCD", enabled = !busy) {
+                                val entryRef = targetEntry
+                                val imgRef = image
+                                if (entryRef == null || imgRef == null) {
+                                    status = "请先选择目标分区"
+                                } else {
+                                    scope.launch {
+                                        busy = true
+                                        log = emptyList()
+                                        status = "正在导出 BCD …"
+                                        val result = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                BcdFix.exportFromPartition(context, imgRef, entryRef, onLog = { append(it) })
+                                            }.getOrElse { "导出失败：${it.message}" }
+                                        }
+                                        status = result
                                         busy = false
                                     }
                                 }

@@ -244,11 +244,13 @@ done
     exit 1
   fi
   log "building mirrorbox-ntfs-apply (ntfs lib: ${ntfs_lib})"
+  # 注意：bionic 把 pthread 折进 libc，没有 -lpthread 这个库；-lm 也不需要
+  # （libntfs-3g 用到的数学函数在 bionic 的 libc 里）。这里只链接静态库本身。
   "${CC}" ${CFLAGS_COMMON} -Wall -Wextra -Wno-unused-parameter \
     -I"${BUILD_DIR}/ntfs-3g/include" -I"${BUILD_DIR}/ntfs-3g/include/ntfs-3g" \
     -o "${BUILD_DIR}/mirrorbox-ntfs-apply" \
     "${NATIVE_DIR}/src-mirrorbox/ntfs-apply.c" \
-    "${ntfs_lib}" ${LDFLAGS_COMMON} -lpthread -lm \
+    "${ntfs_lib}" ${LDFLAGS_COMMON} \
     > "${LOG_DIR}/ntfs-apply-build.log" 2>&1 || {
       tail -40 "${LOG_DIR}/ntfs-apply-build.log" >&2
       exit 1

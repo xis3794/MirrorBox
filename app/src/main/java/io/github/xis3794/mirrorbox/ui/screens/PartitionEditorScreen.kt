@@ -66,6 +66,7 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
     var fsKind by remember { mutableStateOf(EditOps.FsKind.EXT4) }
     var label by remember { mutableStateOf("MIRRORBOX") }
     var bootPath by remember { mutableStateOf("") }
+    var bootMessage by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -365,11 +366,26 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                     ) {
                         val result = BootRecords.install(context, file, record)
                         refresh()
-                        status = "${result.message} · ${record.detail}"
+                        val msg = "${result.message}（${record.title}）"
+                        bootMessage = msg
+                        status = msg
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                     }
                     Spacer(Modifier.height(4.dp))
                 }
                 InfoRow("当前磁盘推荐", BootRecords.recommended(scheme).title)
+                bootMessage?.let { msg ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (msg.contains("失败") || msg.contains("不能")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.tertiary
+                        },
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = bootPath,
@@ -382,21 +398,27 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GlassButton("写入自定义记录", enabled = !busy && bootPath.isNotBlank()) {
                         val blob = runCatching { File(bootPath.trim()).readBytes() }.getOrNull()
-                        status = if (blob == null || blob.isEmpty()) {
+                        val msg = if (blob == null || blob.isEmpty()) {
                             "读不到引导记录：$bootPath"
                         } else {
                             PartitionOps.writeBootCode(file, blob).also { refresh() }.message
                         }
+                        bootMessage = msg
+                        status = msg
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                     }
                     GlassButton("查看当前引导代码", enabled = !busy) {
                         val code = PartitionOps.readBootCode(file)
-                        status = if (code == null) {
+                        val msg = if (code == null) {
                             "无法读取 MBR"
                         } else {
                             val nonZero = code.count { it.toInt() != 0 }
                             val hex = code.take(16).joinToString(" ") { "%02X".format(it) }
                             "前 16 字节：$hex （非零字节 $nonZero/440）"
                         }
+                        bootMessage = msg
+                        status = msg
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
             }

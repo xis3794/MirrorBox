@@ -60,12 +60,56 @@ object AppPaths {
         return candidate
     }
 
-    fun sizeOfTree(dir: File): Long {
+    /**
+     * 目录体积统计，**带硬上限**，可以安全地在 UI 线程附近调用。
+     *
+     * 之前这里是无上限递归：释放 WIM 之后 `work/releases/<镜像>` 里有几十万个文件，
+     * 一次统计要跑几十秒 —— 设置页因为在组合期调用它而直接卡死。现在超过
+     * [maxEntries] 个文件或 [budgetMs] 毫秒就停下，返回 (字节数, 是否被截断)。
+     */
+    fun sizeOfTreeBounded(
+        dir: File,
+        maxEntries: Int = 20_000,
+        budgetMs: Long = 400L,
+    ): Pair<Long, Boolean> {
+        if (!dir.exists()) return 0L to false
+        val deadline = System.currentTimeMillis() + budgetMs
+        var entries = 0
         var total = 0L
-        val kids = dir.listFiles() ?: return 0L
-        for (f in kids) {
-            total += if (f.isDirectory) sizeOfTree(f) else f.length()
+        val stack = ArrayDeque<File>()
+        stack.addLast(dir)
+        while (stack.isNotEmpty() && entries < maxEntries && System.currentTimeMillis() < deadline) {
+            val kids = stack.removeLast().listFiles() ?: continue
+            for (f in kids) {
+                if (f.isDirectory) {
+                    stack.addLast(f)
+                } else {
+                    total += f.length()
+                    entries++
+                }
+            }
         }
-        return total
+        val truncated = entries >= maxEntries || System.currentTimeMillis() >= deadline
+        return total to truncated
     }
+
+    /** 释放 WIM 的暂存目录（可能极大，单独统计）。 */
+    fun stagingDir(): File = File(work, "releases")
+
+    /** 工作区占用：排除 `work/releases`，避免被暂存镜像的几十万文件拖死。 */
+    fun workspaceUsage(): Triple<Long, Long, Boolean> {
+        val staging = sizeOfTreeBounded(stagingDir(), maxEntries = 4_000, budgetMs = 300L)
+        val roots = listOf(home, images, iso, logs, File(work, "tmp"))
+        var main = 0L
+        var truncated = staging.second
+        for (root in roots) {
+            val (bytes, cut) = sizeOfTreeBounded(root, maxEntries = 6_000, budgetMs = 200L)
+            main += bytes
+            truncated = truncated || cut
+        }
+        return Triple(main, staging.first, truncated)
+    }
+
+    /** 兼容旧调用：小目录够用，但同样带上限。 */
+    fun sizeOfTree(dir: File): Long = sizeOfTreeBounded(dir).first
 }

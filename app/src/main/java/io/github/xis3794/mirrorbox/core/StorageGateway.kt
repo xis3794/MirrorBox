@@ -164,10 +164,16 @@ object StorageGateway {
         return if (file.renameTo(target)) target else null
     }
 
+    /**
+     * 工作区占用与可用空间。
+     *
+     * 注意：这里用**带上限**的统计（`AppPaths.workspaceUsage`）—— 释放 WIM 之后暂存目录可能有
+     * 几十万个文件，无上限遍历会让首页一直卡在"正在检测"。
+     */
     fun diskUsage(): Pair<Long, Long> {
-        val used = AppPaths.sizeOfTree(AppPaths.root)
+        val (main, staging, _) = AppPaths.workspaceUsage()
         val stat = android.os.StatFs(AppPaths.root.absolutePath)
         val free = stat.availableBlocksLong * stat.blockSizeLong
-        return used to free
+        return (main + staging) to free
     }
 }

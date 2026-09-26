@@ -61,12 +61,19 @@ fun SettingsScreen(nav: Navigator) {
     var toolDir by remember { mutableStateOf(Prefs.externalToolDir.orEmpty()) }
     var version by remember { mutableStateOf("") }
     var diagStatus by remember { mutableStateOf<String?>(null) }
+    var storage by remember { mutableStateOf<StorageUsage?>(null) }
 
     LaunchedEffectOnce {
         version = withContextIo {
             runCatching {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.1.0"
             }.getOrDefault("0.1.0")
+        }
+        // 体积统计放到 IO 线程并带上限：释放 WIM 之后目录可能有几十万文件，
+        // 之前这里在组合期直接遍历 → 点设置就卡死。
+        storage = withContextIo {
+            val (main, staging, truncated) = AppPaths.workspaceUsage()
+            StorageUsage(main, staging, truncated)
         }
     }
 
@@ -157,7 +164,37 @@ fun SettingsScreen(nav: Navigator) {
                 Spacer(Modifier.height(6.dp))
                 InfoRow("工作区", AppPaths.root.absolutePath)
                 InfoRow("外部目录", AppPaths.externalRoot().absolutePath)
-                InfoRow("可用空间", Fmt.size(AppPaths.sizeOfTree(AppPaths.root).let { 0L }))
+                val usage = storage
+                InfoRow(
+                    "占用",
+                    when {
+                        usage == null -> "计算中…"
+                        usage.truncated -> "≥ ${Fmt.size(usage.main + usage.staging)}（目录太大，已截断统计）"
+                        else -> Fmt.size(usage.main + usage.staging)
+                    },
+                )
+                InfoRow(
+                    "其中暂存区",
+                    when {
+                        usage == null -> "计算中…"
+                        else -> Fmt.size(usage.staging) + if (usage.staging > 0) "（释放 WIM 的展开目录）" else ""
+                    },
+                )
+                if (usage != null && usage.staging > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    GlassButton("清理暂存区") {
+                        val dir = AppPaths.stagingDir()
+                        val freed = AppPaths.sizeOfTreeBounded(dir, maxEntries = 2_000, budgetMs = 200L).first
+                        val ok = runCatching { dir.deleteRecursively() }.getOrDefault(false)
+                        val (main, staging, truncated) = AppPaths.workspaceUsage()
+                        storage = StorageUsage(main, staging, truncated)
+                        diagStatus = if (ok) {
+                            "已清理暂存区（释放约 ${Fmt.size(freed)}）"
+                        } else {
+                            "清理失败，可手动删除 ${dir.absolutePath}"
+                        }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -285,6 +322,8 @@ fun SettingsScreen(nav: Navigator) {
 private fun LaunchedEffectOnce(block: suspend () -> Unit) {
     androidx.compose.runtime.LaunchedEffect(Unit) { block() }
 }
+
+private data class StorageUsage(val main: Long, val staging: Long, val truncated: Boolean)
 
 private suspend fun <T> withContextIo(block: () -> T): T =
     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { block() }

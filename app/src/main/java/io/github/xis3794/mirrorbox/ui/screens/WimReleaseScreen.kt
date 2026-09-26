@@ -66,6 +66,7 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
     var fsKind by remember { mutableStateOf(EditOps.FsKind.EXT4) }
     var label by remember { mutableStateOf("MIRRORBOX") }
     var writeBoot by remember { mutableStateOf(true) }
+    var cleanAfterRelease by remember { mutableStateOf(true) }
     var bootRecord by remember { mutableStateOf(BootRecords.MBR) }
     var stagingPath by remember { mutableStateOf("") }
     var log by remember { mutableStateOf(emptyList<String>()) }
@@ -98,6 +99,14 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
         WimOps.safeStagingDir(typed, wimFile?.nameWithoutExtension ?: "wim")
     }
     val stagingDir = stagingResult.first
+
+    // 暂存目录体积：异步 + 带上限统计（释放后可能有几十万文件，绝不能放在组合期）。
+    var stagingSize by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(stagingDir.absolutePath) {
+        stagingSize = withContext(Dispatchers.IO) {
+            AppPaths.sizeOfTreeBounded(stagingDir, maxEntries = 8_000, budgetMs = 400L).first
+        }
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         ScreenHeader(
@@ -283,7 +292,27 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                 )
                 Spacer(Modifier.height(4.dp))
                 InfoRow("实际目录", stagingDir.absolutePath)
-                InfoRow("目录体积", Fmt.size(AppPaths.sizeOfTree(stagingDir)))
+                InfoRow(
+                    "目录体积",
+                    stagingSize?.let { Fmt.size(it) } ?: "计算中…",
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GlassButton("重新统计", enabled = !busy) {
+                        scope.launch {
+                            stagingSize = withContext(Dispatchers.IO) {
+                                AppPaths.sizeOfTreeBounded(stagingDir, maxEntries = 8_000, budgetMs = 400L).first
+                            }
+                            status = "暂存目录 ${Fmt.size(stagingSize ?: 0L)}"
+                        }
+                    }
+                    GlassButton("清理暂存目录", enabled = !busy && (stagingSize ?: 0L) > 0) {
+                        val freed = stagingSize ?: 0L
+                        val ok = runCatching { stagingDir.deleteRecursively() }.getOrDefault(false)
+                        stagingSize = 0L
+                        status = if (ok) "已清理暂存目录（约 ${Fmt.size(freed)}）" else "清理失败：${stagingDir.absolutePath}"
+                    }
+                }
                 stagingResult.second?.let { note ->
                     Spacer(Modifier.height(4.dp))
                     Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -320,7 +349,7 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                     if (targetEntry != null) {
                         Spacer(Modifier.height(8.dp))
                         InfoRow("分区大小", Fmt.size(targetEntry.sizeBytes))
-                        val treeBytes = AppPaths.sizeOfTree(stagingDir)
+                        val treeBytes = stagingSize ?: 0L
                         if (treeBytes > 0) {
                             val check = ReleaseOps.checkSparseWrite(targetEntry.sizeBytes, treeBytes)
                             InfoRow("空间预检", check.text + if (check.enough) " · 充足" else " · 不足")
@@ -426,6 +455,7 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                                 }.getOrElse { "释放异常：${it.message}" }
                             }
                             status = outcome
+                            android.widget.Toast.makeText(context, outcome.take(120), android.widget.Toast.LENGTH_LONG).show()
                             busy = false
                         }
                     }
@@ -447,8 +477,8 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                             status = "正在释放镜像 $selectedIndex → 分区 ${entry.index} …"
                             val outcome = withContext(Dispatchers.IO) {
                                 runCatching {
-                                    val treeBytes = AppPaths.sizeOfTree(stagingDir)
-                                    val check = ReleaseOps.checkSpace(entry.sizeBytes, treeBytes)
+                                    val treeBytes = stagingSize ?: 0L
+                                    val check = ReleaseOps.checkSparseWrite(entry.sizeBytes, treeBytes)
                                     append("空间预检：${check.text}")
                                     stagingDir.deleteRecursively()
                                     val applied = WimOps.apply(context, file, selectedIndex, stagingDir) { append(it) }
@@ -464,28 +494,44 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                                             if (done % (64L * 1024 * 1024) < 65536L) append("  回写 ${Fmt.size(done)}/${Fmt.size(entry.sizeBytes)}")
                                         },
                                     )
-                                    if (!release.ok) return@runCatching release.message
-                                    if (writeBoot) {
+                                    val summary = if (!release.ok) {
+                                        release.message
+                                    } else if (writeBoot) {
                                         val boot = BootRecords.install(context, img, bootRecord)
                                         append(boot.message)
                                         release.message + " · " + boot.message
                                     } else {
                                         release.message
                                     }
+                                    // 暂存目录可能占几十 GB，写入分区后默认清掉（用户可关）。
+                                    if (cleanAfterRelease && release.ok) {
+                                        append("清理暂存目录：${stagingDir.absolutePath}")
+                                        stagingDir.deleteRecursively()
+                                        stagingSize = 0L
+                                        summary + " · 已清理暂存"
+                                    } else {
+                                        summary
+                                    }
                                 }.getOrElse { "写入分区异常：${it.message}" }
                             }
                             status = outcome
+                            android.widget.Toast.makeText(context, outcome.take(120), android.widget.Toast.LENGTH_LONG).show()
                             refreshTable()
                             busy = false
                         }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "提示：写入会把目标分区原有文件系统整个替换；请先确认分区没选错。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        GlassSelectChip("写入后删除暂存", cleanAfterRelease, { cleanAfterRelease = !cleanAfterRelease })
+                        GlassSelectChip("保留暂存", !cleanAfterRelease, { cleanAfterRelease = false })
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "提示：写入会把目标分区原有文件系统整个替换；请先确认分区没选错。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
             }
 
             status?.let {

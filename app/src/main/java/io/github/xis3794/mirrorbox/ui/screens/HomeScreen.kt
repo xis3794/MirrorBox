@@ -63,10 +63,19 @@ fun HomeScreen(nav: Navigator) {
 
     LaunchedEffect(Unit) {
         val snapshot = withContext(Dispatchers.IO) {
-            val tools = NativeTools.availableCount(context)
-            val images = StorageGateway.listImages()
-            val (used, free) = StorageGateway.diskUsage()
-            Data(tools, images, used, free)
+            // 兜底超时：任何一次检测卡住也不会让首页永远停在"正在检测…"。
+            kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+                val tools = NativeTools.availableCount(context)
+                val images = StorageGateway.listImages()
+                val (used, free) = StorageGateway.diskUsage()
+                Data(tools, images, used, free)
+            }
+        }
+        if (snapshot == null) {
+            toolCount = 0
+            usageText = "—"
+            freeText = "—"
+            return@LaunchedEffect
         }
         toolCount = snapshot.toolCount
         imageCount = snapshot.images.size

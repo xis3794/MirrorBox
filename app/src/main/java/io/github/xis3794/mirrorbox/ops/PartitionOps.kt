@@ -2,6 +2,7 @@ package io.github.xis3794.mirrorbox.ops
 
 import android.content.Context
 import io.github.xis3794.mirrorbox.core.AppPaths
+import io.github.xis3794.mirrorbox.core.Fmt
 import io.github.xis3794.mirrorbox.qcow2.Qcow2Image
 import io.github.xis3794.mirrorbox.qcow2.disk.Guid
 import io.github.xis3794.mirrorbox.qcow2.disk.NewPartition
@@ -276,8 +277,10 @@ object PartitionOps {
     // ------------------------------------------------------------------ filesystems
 
     /**
-     * Creates a fresh filesystem inside [entry] using the safe track: the partition is materialised
-     * as a raw file, formatted with the matching mkfs, then diffed back cluster by cluster.
+     * Creates a fresh filesystem inside [entry] using the light track: the partition is materialised
+     * as a **sparse** raw file (old contents are not copied — they are useless when the filesystem is
+     * being rebuilt), formatted with the matching mkfs, then only the segments the tool actually
+     * wrote are diffed back into the qcow2.
      */
     suspend fun formatPartition(
         context: Context,
@@ -292,17 +295,23 @@ object PartitionOps {
         val tmp = File(AppPaths.tmp, "part-${entry.index}-${System.currentTimeMillis()}.raw")
         return try {
             tmp.parentFile?.mkdirs()
-            if (!EditOps.extractRange(image, entry.startByte, length, tmp, onProgress)) {
-                return FormatOutcome(false, "无法提取分区 ${entry.index}")
+            if (!EditOps.createSparseRange(length, tmp)) {
+                return FormatOutcome(false, "无法创建临时文件（空间不足？）")
             }
             val snapshot = EditOps.format(context, kind, tmp, label)
             if (!snapshot.success) {
                 return FormatOutcome(false, "mkfs 失败：${snapshot.summary}")
             }
-            val written = EditOps.writeBackRange(image, entry.startByte, length, tmp, onProgress)
+            val rebuild = EditOps.writeBackRebuilt(image, entry.startByte, length, tmp, onProgress)
+            val written = rebuild.result
             FormatOutcome(
                 ok = true,
-                message = "${kind.label} 已写入分区 ${entry.index}（改变 ${written.changedClusters} 个簇）",
+                message = "${kind.label} 已写入分区 ${entry.index}（改变 ${written.changedClusters} 个簇，" +
+                    if (rebuild.sparse) {
+                        "稀疏回写 ${Fmt.size(rebuild.dataBytes)}）"
+                    } else {
+                        "完整差分回写）"
+                    },
                 changedClusters = written.changedClusters,
                 bytesWritten = written.bytesWritten,
             )

@@ -301,3 +301,19 @@ fun GlassFab(
 }
 
 private fun Color.luminance(): Float = 0.299f * red + 0.587f * green + 0.114f * blue
+
+/**
+ * 当前主题下背景的代表色。
+ *
+ * 用于底部淡出遮罩：之前用黑色渐变，在浅色主题下会显得"下面黑一块"，很难看；
+ * 用背景色渐隐就自然多了。
+ */
+@Composable
+fun appBackgroundColor(): Color {
+    val dark = isDarkScheme()
+    return if (Prefs.performanceMode) {
+        if (dark) Color(0xFF0B111A) else Color(0xFFEFF3FA)
+    } else {
+        if (dark) Color(0xFF080D16) else Color(0xFFF2F6FD)
+    }
+}

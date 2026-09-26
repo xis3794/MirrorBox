@@ -33,7 +33,7 @@ object ReleaseOps {
     data class SpaceCheck(val requiredBytes: Long, val freeBytes: Long) {
         val enough: Boolean get() = freeBytes > requiredBytes
         val text: String
-            get() = "需要 ${Fmt.size(requiredBytes)}（分区临时副本），可用 ${Fmt.size(freeBytes)}"
+            get() = "预计写入 ${Fmt.size(requiredBytes)}，可用 ${Fmt.size(freeBytes)}"
     }
 
     /** FAT 释放通过 mtools 完成；NTFS 逐文件写入太慢，暂不支持。 */
@@ -45,17 +45,35 @@ object ReleaseOps {
     }
 
     /**
-     * @param partitionBytes 目标分区大小（临时 raw 副本要这么大）
+     * @param partitionBytes 目标分区大小（完整提取时临时副本要这么大）
      * @param stagingBytes 待写入目录的大小
      */
     fun checkSpace(partitionBytes: Long, stagingBytes: Long, dir: File = AppPaths.tmp): SpaceCheck {
-        val stat = runCatching { StatFs(dir.absolutePath) }.getOrNull()
-        val free = stat?.let { it.availableBlocksLong.toDouble() * it.blockSizeLong }?.toLong() ?: 0L
+        val free = freeBytes(dir)
         return SpaceCheck(partitionBytes + stagingBytes, free)
     }
 
     /**
+     * 稀疏写入的空间预检。
+     *
+     * mkfs / mcopy 只会写它们真正写过的块，写入量 ≈ 文件系统元数据（几十 MB）+ 实际文件数据，
+     * 与分区大小无关；这里按「待写入目录 × 1.2 + 64 MB」保守估算（上限仍是分区大小）。
+     */
+    fun checkSparseWrite(partitionBytes: Long, stagingBytes: Long, dir: File = AppPaths.tmp): SpaceCheck {
+        val free = freeBytes(dir)
+        val estimate = minOf(partitionBytes, stagingBytes + stagingBytes / 5 + 64L * 1024 * 1024)
+        return SpaceCheck(estimate, free)
+    }
+
+    private fun freeBytes(dir: File): Long {
+        val stat = runCatching { StatFs(dir.absolutePath) }.getOrNull()
+        return stat?.let { it.availableBlocksLong.toDouble() * it.blockSizeLong }?.toLong() ?: 0L
+    }
+
+    /**
      * 把 [staging] 的内容写进 [entry] 所代表的分区（分区内原有文件系统会被重建）。
+     *
+     * 走稀疏轨：不复制分区旧数据，只回写 mkfs / mcopy 真正写过的数据段。
      */
     suspend fun releaseDirectory(
         context: Context,
@@ -74,9 +92,9 @@ object ReleaseOps {
 
         val tmpRaw = File(AppPaths.tmp, "release-p${entry.index}-${System.currentTimeMillis()}.raw")
         try {
-            onLog("① 提取分区 ${entry.index}（${Fmt.size(length)}）→ 临时 raw")
-            if (!EditOps.extractRange(image, entry.startByte, length, tmpRaw, onProgress)) {
-                return Result(false, "无法提取分区 ${entry.index}")
+            onLog("① 创建稀疏目标（逻辑长度 ${Fmt.size(length)}，不复制分区旧数据）")
+            if (!EditOps.createSparseRange(length, tmpRaw)) {
+                return Result(false, "无法创建临时文件：空间不足？")
             }
 
             onLog("② 写入 ${kind.label} 文件系统（源：${staging.name}）")
@@ -121,12 +139,14 @@ object ReleaseOps {
                 EditOps.FsKind.NTFS -> return Result(false, unsupportedReason(kind))
             }
 
-            onLog("③ 差分回写变化的簇到镜像 …")
-            val written = EditOps.writeBackRange(image, entry.startByte, length, tmpRaw, onProgress)
+            onLog("③ 稀疏回写变化的簇到镜像 …")
+            val rebuild = EditOps.writeBackRebuilt(image, entry.startByte, length, tmpRaw, onProgress, onLog)
+            val written = rebuild.result
             return Result(
                 ok = true,
                 message = "已写入分区 ${entry.index}：${kind.label}，变化 ${written.changedClusters} 个簇" +
-                    "（${Fmt.size(written.bytesWritten)}，共扫描 ${written.scannedClusters} 簇）",
+                    "（${Fmt.size(written.bytesWritten)}" +
+                    if (rebuild.sparse) "，稀疏轨只扫了 ${Fmt.size(rebuild.dataBytes)}）" else "，完整差分轨）",
                 changedClusters = written.changedClusters,
                 bytesWritten = written.bytesWritten,
             )

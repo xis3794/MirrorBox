@@ -267,7 +267,8 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "先展开到目录（必须），再可选地把目录写进镜像里的某个分区。" +
-                        "写入采用「提取分区 → mkfs → 差分回写」，需要一个和分区一样大的临时空间。",
+                        "写入走稀疏轨：不复制分区旧数据，只把 mkfs/mcopy 真正写过的数据段回写进 qcow2，" +
+                        "临时占用与分区大小无关（通常几十 MB 起）。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -309,7 +310,7 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                         InfoRow("分区大小", Fmt.size(targetEntry.sizeBytes))
                         val treeBytes = AppPaths.sizeOfTree(stagingDir)
                         if (treeBytes > 0) {
-                            val check = ReleaseOps.checkSpace(targetEntry.sizeBytes, treeBytes)
+                            val check = ReleaseOps.checkSparseWrite(targetEntry.sizeBytes, treeBytes)
                             InfoRow("空间预检", check.text + if (check.enough) " · 充足" else " · 不足")
                         }
                         Spacer(Modifier.height(6.dp))

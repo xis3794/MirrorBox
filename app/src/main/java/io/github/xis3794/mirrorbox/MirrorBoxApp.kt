@@ -57,6 +57,7 @@ import io.github.xis3794.mirrorbox.ui.glass.GlassCard
 import io.github.xis3794.mirrorbox.ui.glass.GlassFab
 import io.github.xis3794.mirrorbox.ui.glass.GlassSurface
 import io.github.xis3794.mirrorbox.ui.glass.NavDestination
+import io.github.xis3794.mirrorbox.ui.glass.appBackgroundColor
 import io.github.xis3794.mirrorbox.ui.icons.MbIcons
 import io.github.xis3794.mirrorbox.ui.screens.ConvertScreen
 import io.github.xis3794.mirrorbox.ui.screens.CreateScreen
@@ -127,8 +128,11 @@ fun MirrorBoxApp() {
             // 底部区域：先一层"淡出遮罩"，让列表内容在栏下自然消失（之前是直接压字），
             // 再把「加号」放在栏的上方（之前它和栏顶边叠在一起，且有半透明底色 → 不可读）。
             if (isTabScreen && !showQuickActions) {
-                val fade = remember {
-                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)))
+                val fadeBase = appBackgroundColor()
+                val fade = remember(fadeBase) {
+                    Brush.verticalGradient(
+                        listOf(fadeBase.copy(alpha = 0f), fadeBase.copy(alpha = 0.92f), fadeBase),
+                    )
                 }
                 Box(
                     modifier = Modifier

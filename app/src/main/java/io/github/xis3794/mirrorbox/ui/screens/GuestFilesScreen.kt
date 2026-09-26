@@ -137,6 +137,12 @@ fun GuestFilesScreen(nav: Navigator, path: String) {
                         InfoRow("类型", entry.typeName.ifBlank { entry.typeId })
                         val check = ReleaseOps.checkSpace(entry.sizeBytes, 0L)
                         InfoRow("空间需求", "临时副本 ${Fmt.size(entry.sizeBytes)}，可用 ${Fmt.size(check.freeBytes)}")
+                        Text(
+                            "浏览/改文件必须看到分区原有内容，所以这里要一份与分区等大的临时副本；" +
+                                "只是「格式化分区 / 释放 WIM」的话不用 —— 那两条走稀疏轨，不复制旧数据。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

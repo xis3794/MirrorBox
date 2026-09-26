@@ -90,6 +90,11 @@ object ReleaseOps {
         if (installGrub) {
             // 把 /boot/grub/grub.cfg 一起写进分区，否则 GRUB 起来了但没有菜单（只有命令行）。
             GrubBoot.injectConfig(context, staging, kind, label)?.let(onLog)
+            if (kind == EditOps.FsKind.NTFS) {
+                // Windows：install.wim 里的 BCD 是从原机器继承的，卷号常常对不上本磁盘，
+                // bootmgr 会报 0xC000000E（引导选择失败，因为需要的设备不可访问）。
+                onLog("BCD 检查：${BcdFix.fixInStaging(staging, entry.index)}")
+            }
         }
 
         val tmpRaw = File(AppPaths.tmp, "release-p${entry.index}-${System.currentTimeMillis()}.raw")

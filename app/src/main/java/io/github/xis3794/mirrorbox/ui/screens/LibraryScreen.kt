@@ -78,7 +78,7 @@ fun LibraryScreen(nav: Navigator) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 140.dp),
+        contentPadding = PaddingValues(bottom = 200.dp),
     ) {
         item {
             ScreenHeader(

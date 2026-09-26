@@ -78,7 +78,7 @@ fun HomeScreen(nav: Navigator) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 140.dp),
+        contentPadding = PaddingValues(bottom = 200.dp),
     ) {
         item {
             ScreenHeader(
@@ -168,7 +168,7 @@ fun HomeScreen(nav: Navigator) {
                 Box(Modifier.padding(horizontal = 20.dp)) {
                     GlassCard(Modifier.fillMaxWidth()) {
                         Text(
-                            "还没有镜像。点击右下角 + 新建一个 qcow2，或从「镜像库」导入现有文件。",
+                            "还没有镜像。点击中间的 + 新建一个 qcow2，或从「镜像库」导入现有文件。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

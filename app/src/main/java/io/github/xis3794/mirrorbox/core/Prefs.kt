@@ -7,9 +7,20 @@ import android.content.SharedPreferences
 object Prefs {
 
     private lateinit var sp: SharedPreferences
+    private var lowRamDevice = false
 
     fun init(context: Context) {
         sp = context.getSharedPreferences("mirrorbox_prefs", Context.MODE_PRIVATE)
+        lowRamDevice = runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val info = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            // 低内存设备，或总内存 < 4 GB —— 这类机器上每帧少画两层就明显不卡。
+            am.isLowRamDevice || info.totalMem in 1 until 4L * 1024 * 1024 * 1024
+        }.getOrDefault(false)
+        // 旧版本开关（reduce_effects）迁移到新的 performance_mode，用户之前的选择不丢。
+        if (sp.contains("reduce_effects") && !sp.contains("performance_mode")) {
+            sp.edit().putBoolean("performance_mode", sp.getBoolean("reduce_effects", false)).apply()
+        }
     }
 
     /** 0 = follow system, 1 = light, 2 = dark */
@@ -17,10 +28,23 @@ object Prefs {
         get() = sp.getInt("theme_mode", 0)
         set(value) = sp.edit().putInt("theme_mode", value).apply()
 
-    /** Reduces blur/translucency for low end devices. */
+    /**
+     * 性能模式：纯色卡片、无背景光晕、无过渡动画。
+     * 低内存设备默认开启（用户可在设置里改）。
+     */
+    var performanceMode: Boolean
+        get() = sp.getBoolean("performance_mode", lowRamDevice)
+        set(value) = sp.edit().putBoolean("performance_mode", value).apply()
+
+    /** 兼容旧键：等价于「性能模式」。 */
     var reduceEffects: Boolean
-        get() = sp.getBoolean("reduce_effects", false)
-        set(value) = sp.edit().putBoolean("reduce_effects", value).apply()
+        get() = performanceMode
+        set(value) {
+            performanceMode = value
+        }
+
+    /** 过渡/指示器动画是否启用。 */
+    val animationsEnabled: Boolean get() = !performanceMode
 
     /** 0..100 glass strength used by GlassSurface. */
     var glassIntensity: Int

@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.unit.dp
+import io.github.xis3794.mirrorbox.core.Prefs
 
 data class NavDestination(val label: String, val icon: ImageVector)
 
@@ -40,10 +41,11 @@ fun FloatingGlassBar(
     modifier: Modifier = Modifier,
 ) {
     val haptics = LocalHapticFeedback.current
+    val perfMode = Prefs.performanceMode
     GlassSurface(
         modifier = modifier.fillMaxWidth().height(64.dp),
         shape = RoundedCornerShape(26.dp),
-        strength = 1.15f,
+        strength = if (perfMode) 1f else 1.15f,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
     ) {
         Row(
@@ -53,22 +55,31 @@ fun FloatingGlassBar(
         ) {
             destinations.forEachIndexed { index, destination ->
                 val selected = index == selectedIndex
-                val tint by animateColorAsState(
-                    targetValue = if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    label = "navTint",
-                )
-                val pill by animateColorAsState(
-                    targetValue = if (selected) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                    } else {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0f)
-                    },
-                    label = "navPill",
-                )
+                // 性能模式下不做颜色动画（每项两个 animateColorAsState 在低端机上是持续帧开销）。
+                val tint = if (perfMode) {
+                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    animateColorAsState(
+                        targetValue = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        label = "navTint",
+                    ).value
+                }
+                val pill = if (perfMode) {
+                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else androidx.compose.ui.graphics.Color.Transparent
+                } else {
+                    animateColorAsState(
+                        targetValue = if (selected) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        } else {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0f)
+                        },
+                        label = "navPill",
+                    ).value
+                }
                 Box(
                     modifier = Modifier
                         .weight(1f)

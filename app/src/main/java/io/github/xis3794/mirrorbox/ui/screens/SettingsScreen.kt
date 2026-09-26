@@ -101,16 +101,16 @@ fun SettingsScreen(nav: Navigator) {
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("降低特效", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                        Text("性能模式", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
                         Text(
-                            "关闭背景光晕与部分透明，适合低端设备",
+                            "纯色卡片 + 无背景光晕 + 无过渡动画，最流畅省电；低内存设备已自动开启",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Switch(checked = reduceEffects, onCheckedChange = {
                         reduceEffects = it
-                        Prefs.reduceEffects = it
+                        Prefs.performanceMode = it
                     })
                 }
             }
@@ -226,7 +226,7 @@ fun SettingsScreen(nav: Navigator) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.height(140.dp))
+            Spacer(Modifier.height(200.dp))
         }
     }
 }

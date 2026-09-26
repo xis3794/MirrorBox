@@ -190,6 +190,77 @@ mirrorbox_globfree(glob_t *result)
     print('patched src/reference.c: minimal glob()/globfree() for bionic (API < 28)')
 PY
 
+  # bionic only declares futimes()/lutimes() from API 26 onwards, and src/unix_apply.c calls them
+  # unconditionally in its (rarely taken) fallback path -- with clang an implicit declaration is a
+  # hard error under C99+. Both are thin wrappers over utimensat(), which bionic has always had
+  # (futimens() since API 19, utimensat() from the start), so supply local equivalents and
+  # macro-redirect the calls. They are static, so a clash with libc is impossible.
+  python3 - <<'PY'
+import pathlib
+f = pathlib.Path('src/unix_apply.c')
+if not f.exists():
+    raise SystemExit('wimlib: src/unix_apply.c not found')
+text = f.read_text()
+if 'mirrorbox_android_futimes' not in text:
+    anchor = '#include <unistd.h>'
+    if anchor not in text:
+        raise SystemExit('wimlib: cannot find ' + anchor)
+    shim = anchor + '''
+
+/* mirrorbox_android_futimes: see the note in build-wimlib.sh */
+#if defined(__ANDROID__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 26)
+static void
+mirrorbox_android_timeval_to_timespec(const struct timeval tv[2],
+				      struct timespec ts[2])
+{
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		ts[i].tv_sec = tv[i].tv_sec;
+		if (tv[i].tv_usec < 0) {
+			/* utimensat() wants tv_nsec in [0, 1e9), while timeval
+			 * allows a negative fractional part. */
+			ts[i].tv_sec -= 1;
+			ts[i].tv_nsec = 1000000000L + tv[i].tv_usec * 1000L;
+		} else {
+			ts[i].tv_nsec = tv[i].tv_usec * 1000L;
+		}
+	}
+}
+
+static int
+mirrorbox_android_futimes(int fd, const struct timeval tv[2])
+{
+	struct timespec ts[2];
+
+	if (tv == NULL)
+		return futimens(fd, NULL);
+	mirrorbox_android_timeval_to_timespec(tv, ts);
+	return futimens(fd, ts);
+}
+
+static int
+mirrorbox_android_lutimes(const char *path, const struct timeval tv[2])
+{
+	struct timespec ts[2];
+
+	if (tv == NULL)
+		return utimensat(AT_FDCWD, path, NULL, AT_SYMLINK_NOFOLLOW);
+	mirrorbox_android_timeval_to_timespec(tv, ts);
+	return utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW);
+}
+
+#  define futimes mirrorbox_android_futimes
+#  define lutimes mirrorbox_android_lutimes
+#endif'''
+    f.write_text(text.replace(anchor, shim, 1))
+    print('patched src/unix_apply.c: futimes()/lutimes() for bionic (API < 26)')
+PY
+
+  # Force the modern timestamp path: in a cross build the AC_CHECK_FUNCS link probe can silently
+  # fail, after which wimlib falls back to futimes()/lutimes(). Both futimens() and utimensat() are
+  # declared for API 24 and live in libc, so pinning the cache variables is safe and exact.
+  ac_cv_func_futimens=yes ac_cv_func_utimensat=yes \
   ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
     --disable-shared --enable-static \
     --without-ntfs-3g --without-fuse \

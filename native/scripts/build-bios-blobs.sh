@@ -112,6 +112,7 @@ insmod chain
 
 menuentry "probe" {
   echo "MIRRORBOX-GRUB-BOOT-OK"
+  ntldr /bootmgr
   sleep 20
 }
 
@@ -147,7 +148,14 @@ if ! grep -q 'MIRRORBOX-GRUB-BOOT-OK' "${OUT}/qemu.log"; then
   tail -40 "${OUT}/qemu.log"
   exit 1
 fi
-echo "== 启动验证通过：GRUB 已在 SeaBIOS 下启动并读到 /boot/grub/grub.cfg =="
+# 关键：probe 菜单项里真的执行了 `ntldr /bootmgr`。如果 core.img 里没嵌 ntldr 模块，
+# GRUB 会打印 "unknown command"；这里必须确认没有 —— 因为 Windows7 的 BIOS 引导就靠它。
+if grep -q 'unknown command' "${OUT}/qemu.log"; then
+  echo "!! core.img 缺少 ntldr（或其它）模块："
+  grep -a 'unknown command' "${OUT}/qemu.log" | head -5
+  exit 1
+fi
+echo "== 启动验证通过：GRUB 在 SeaBIOS 下启动、读到 grub.cfg，且 ntldr 命令可用 =="
 
 echo "== 7) 产出带真实菜单的 grub.cfg 与 layout.json =="
 cat > "${BIOS_DIR}/grub.cfg" <<'CFG'

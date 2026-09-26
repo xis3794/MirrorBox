@@ -3,6 +3,6 @@
   "mbr_code_bytes": 446,
   "grub_prefix": "(hd0,msdos1)/boot/grub",
   "min_partition_start_lba": 2048,
-  "core_size": 155157,
+  "core_size": 160430,
   "boot_img_size": 512
 }

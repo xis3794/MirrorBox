@@ -88,8 +88,46 @@ build_dosfstools() {
   fetch "${DOSFSTOOLS_URL}" "dosfstools-${DOSFSTOOLS_VERSION}.tar.gz"
   unpack "dosfstools-${DOSFSTOOLS_VERSION}.tar.gz" "${BUILD_DIR}/dosfstools"
   cd "${BUILD_DIR}/dosfstools"
+
+  # bionic only declares nl_langinfo() from API 26 onwards while this build targets API 24, but
+  # dosfstools calls it (inside its HAVE_ICONV block) to learn the local charset used for FAT
+  # long file names. Android's locale charset is always UTF-8, so reporting that keeps the
+  # CP<codepage> <-> UTF-8 conversions correct.
+  python3 - <<'PY'
+import pathlib
+f = pathlib.Path('src/charconv.c')
+if not f.exists():
+    raise SystemExit('dosfstools: src/charconv.c not found')
+text = f.read_text()
+if 'mirrorbox_android_nl_langinfo' not in text:
+    anchor = '#include <langinfo.h>'
+    if anchor not in text:
+        raise SystemExit('dosfstools: cannot find ' + anchor)
+    shim = anchor + '''
+
+/* mirrorbox_android_nl_langinfo: see the note in build-fstools.sh */
+#if defined(__ANDROID__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 26)
+char *nl_langinfo(nl_item item)
+{
+    return item == CODESET ? (char *)"UTF-8" : (char *)"";
+}
+#endif'''
+    f.write_text(text.replace(anchor, shim, 1))
+    print('patched src/charconv.c: nl_langinfo shim for API < 26')
+PY
+
   ./autogen.sh > /dev/null 2>&1 || true
-  ./configure --host="${TRIPLE}" --prefix="${PREFIX}" --disable-compat-symlinks --enable-fat=yes \
+  # dosfstools converts FAT long file names through iconv, and bionic only exports iconv from
+  # API 28. The static GNU libiconv built by the dependency stage is therefore linked in
+  # explicitly: without -I/-L the AM_ICONV probe cannot see it and the tools silently fall back
+  # to the internal CP850 table (no Chinese/European file names on FAT).
+  # NOTE: dosfstools 4.2 has no --enable-fat option any more (FAT support is always built).
+  CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include" \
+    LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib" \
+    LIBS="-liconv" \
+    am_cv_func_iconv=yes am_cv_lib_iconv=yes am_cv_func_iconv_works=yes \
+    ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
+    --disable-compat-symlinks \
     > "${LOG_DIR}/dosfstools-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/dosfstools-configure.log" >&2; exit 1; }
   make -j"${JOBS}" > "${LOG_DIR}/dosfstools-make.log" 2>&1 || { tail -60 "${LOG_DIR}/dosfstools-make.log" >&2; exit 1; }
   package_tool "mkfs-fat" "${BUILD_DIR}/dosfstools/src/mkfs.fat"
@@ -104,7 +142,41 @@ build_mtools() {
   fetch "${MTOOLS_URL}" "mtools-${MTOOLS_VERSION}.tar.gz"
   unpack "mtools-${MTOOLS_VERSION}.tar.gz" "${BUILD_DIR}/mtools"
   cd "${BUILD_DIR}/mtools"
-  ./configure --host="${TRIPLE}" --prefix="${PREFIX}" --disable-floppyd \
+
+  # Same API 24 gap as dosfstools: mtools' iconv path (charsetConv.c) calls nl_langinfo(CODESET)
+  # to find the local charset for FAT long file names. Android is always UTF-8.
+  python3 - <<'PY'
+import pathlib
+f = pathlib.Path('charsetConv.c')
+if not f.exists():
+    raise SystemExit('mtools: charsetConv.c not found')
+text = f.read_text()
+if 'mirrorbox_android_nl_langinfo' not in text:
+    anchor = '#include <langinfo.h>'
+    if anchor not in text:
+        raise SystemExit('mtools: cannot find ' + anchor)
+    shim = anchor + '''
+
+/* mirrorbox_android_nl_langinfo: see the note in build-fstools.sh */
+#if defined(__ANDROID__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 26)
+char *nl_langinfo(nl_item item)
+{
+    return item == CODESET ? (char *)"UTF-8" : (char *)"";
+}
+#endif'''
+    f.write_text(text.replace(anchor, shim, 1))
+    print('patched charsetConv.c: nl_langinfo shim for API < 26')
+PY
+
+  # AC_CHECK_LIB(iconv, iconv) only succeeds when the static GNU libiconv built by the dependency
+  # stage is reachable. Without -L it never adds -liconv to LIBS, yet HAVE_ICONV_H is still
+  # defined (bionic does ship an <iconv.h>, it merely hides the declarations below API 28), so
+  # the link would fail on iconv_open. -I also makes the unguarded GNU <iconv.h> win over
+  # bionic's API 28 annotated one.
+  CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include" \
+    LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib" \
+    LIBS="-liconv" \
+    ./configure --host="${TRIPLE}" --prefix="${PREFIX}" --disable-floppyd \
     > "${LOG_DIR}/mtools-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/mtools-configure.log" >&2; exit 1; }
   make -j"${JOBS}" > "${LOG_DIR}/mtools-make.log" 2>&1 || { tail -60 "${LOG_DIR}/mtools-make.log" >&2; exit 1; }
   # mtools builds one tiny executable per command; the app ships the ones it needs.

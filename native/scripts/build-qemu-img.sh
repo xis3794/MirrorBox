@@ -25,12 +25,52 @@ if rcu.exists():
     text = rcu.read_text()
     text = text.replace('#ifdef CONFIG_MALLOC_TRIM', '#if 0 /* CONFIG_MALLOC_TRIM disabled on Android */')
     rcu.write_text(text)
+# bionic deviations that are cheaper to paper over than to configure away.
+#  - malloc_trim(): absent on bionic.
+#  - shm_open()/shm_unlink(): bionic implements no POSIX shared memory objects at all
+#    (_POSIX_SHARED_MEMORY_OBJECTS is "missing"): the symbols are absent from the headers *and*
+#    from libc, so these definitions also have to satisfy the call sites. The only in-tree user,
+#    qemu_shm_alloc(), creates an anonymous object, unlinks the name immediately and passes the fd
+#    to a peer process — exactly what an unlinked memfd provides. Nothing in a tools-only build
+#    calls it, but the symbols must still resolve when qemu-img is linked.
 osdep = root / 'util/oslib-posix.c'
 if osdep.exists():
     text = osdep.read_text()
-    if 'android_malloc_trim_stub' not in text:
-        text = text.replace('#include <stdlib.h>', '#include <stdlib.h>\n/* android: bionic has no malloc_trim */\n#if defined(__ANDROID__)\nstatic inline int malloc_trim(size_t pad) { (void)pad; return 0; }\n#endif', 1)
-        osdep.write_text(text)
+    if 'mirrorbox_android_shims' not in text:
+        anchor = '#include "qemu/osdep.h"'
+        if anchor not in text:
+            raise SystemExit('util/oslib-posix.c: cannot find ' + anchor)
+        shims = anchor + '''
+
+/* mirrorbox_android_shims */
+#if defined(__ANDROID__)
+#include <sys/syscall.h>
+#include <asm/unistd.h>
+
+/* bionic has no malloc_trim(). */
+static inline int malloc_trim(size_t pad) { (void)pad; return 0; }
+
+/* bionic has no shm_open()/shm_unlink(); see the note in build-qemu-img.sh. */
+int shm_open(const char *name, int oflag, mode_t mode)
+{
+    (void)oflag;
+    (void)mode;
+#ifdef __NR_memfd_create
+    return (int)syscall(__NR_memfd_create, name, 0);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int shm_unlink(const char *name)
+{
+    (void)name;
+    return 0;
+}
+#endif'''
+        osdep.write_text(text.replace(anchor, shims, 1))
+        print('patched util/oslib-posix.c: malloc_trim + shm_open/shm_unlink shims')
 
 # QEMU's mkvenv installs its in-tree python/qemu.qmp module with
 # `pip --no-build-isolation -e`. Editable installs need a PEP 660 capable backend, which the

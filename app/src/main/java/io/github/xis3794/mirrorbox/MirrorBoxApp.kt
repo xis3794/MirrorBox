@@ -49,6 +49,7 @@ import io.github.xis3794.mirrorbox.ui.icons.MbIcons
 import io.github.xis3794.mirrorbox.ui.screens.ConvertScreen
 import io.github.xis3794.mirrorbox.ui.screens.CreateScreen
 import io.github.xis3794.mirrorbox.ui.screens.EditorScreen
+import io.github.xis3794.mirrorbox.ui.screens.GuestFilesScreen
 import io.github.xis3794.mirrorbox.ui.screens.HomeScreen
 import io.github.xis3794.mirrorbox.ui.screens.InspectorScreen
 import io.github.xis3794.mirrorbox.ui.screens.IsoStudioScreen
@@ -94,6 +95,7 @@ fun MirrorBoxApp() {
                     is Screen.Editor -> EditorScreen(nav, screen.path)
                     is Screen.Partitions -> PartitionEditorScreen(nav, screen.path)
                     is Screen.WimRelease -> WimReleaseScreen(nav, screen.path)
+                    is Screen.GuestFiles -> GuestFilesScreen(nav, screen.path)
                     is Screen.SelfCheck -> SelfCheckScreen(nav)
                 }
             }

@@ -24,6 +24,9 @@ sealed interface Screen {
     /** DISM++ 式「释放 WIM」；[path] 为可选的目标镜像（为空时只能展开到目录）。 */
     data class WimRelease(val path: String? = null) : Screen
 
+    /** 客户机文件浏览器（extract → debugfs/mtools/ntfs → commit）。 */
+    data class GuestFiles(val path: String) : Screen
+
     data class SelfCheck(val placeholder: Boolean = false) : Screen
 }
 

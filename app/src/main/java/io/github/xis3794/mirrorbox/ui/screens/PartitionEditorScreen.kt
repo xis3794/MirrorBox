@@ -154,6 +154,11 @@ fun PartitionEditorScreen(nav: Navigator, path: String) {
                     nav.push(io.github.xis3794.mirrorbox.nav.Screen.WimRelease(file.absolutePath))
                     status = "已打开「释放 WIM」：可把 Windows 镜像展开并写入分区"
                 }
+                Spacer(Modifier.height(8.dp))
+                GlassButton("客户机文件浏览", enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    nav.push(io.github.xis3794.mirrorbox.nav.Screen.GuestFiles(file.absolutePath))
+                    status = "已打开「客户机文件」：浏览/复制分区内的文件"
+                }
             }
 
             GlassCard(Modifier.fillMaxWidth()) {

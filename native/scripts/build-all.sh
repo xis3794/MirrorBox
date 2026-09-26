@@ -5,7 +5,7 @@ set -euo pipefail
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-TARGETS="${TARGETS:-deps qemu fstools xorriso}"
+TARGETS="${TARGETS:-deps qemu fstools xorriso wimlib}"
 
 mkdir -p "${OUT_DIR}/${ABI}/tools" "${LOG_DIR}"
 
@@ -15,6 +15,7 @@ for target in ${TARGETS}; do
     qemu)    "${SCRIPT_DIR}/build-qemu-img.sh" ;;
     fstools) "${SCRIPT_DIR}/build-fstools.sh" ;;
     xorriso) "${SCRIPT_DIR}/build-xorriso.sh" ;;
+    wimlib)  "${SCRIPT_DIR}/build-wimlib.sh" ;;
     *) warn "unknown target ${target}" ;;
   esac
 done

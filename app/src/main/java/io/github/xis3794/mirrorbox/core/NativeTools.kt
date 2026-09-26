@@ -54,12 +54,19 @@ object NativeTools {
 
     val XORRISO = NativeTool("xorriso", "xorriso", "libxorriso.so", ToolCategory.ISO, "ISO 制作 / 提取 / 编辑", listOf("-version"))
 
+    /**
+     * WIM engine for the DISM++-style "释放 WIM" flow: `info` (list images), `dir`, `extract` and
+     * `apply` (unpack an image into a directory without mounting anything).
+     */
+    val WIMLIB = NativeTool("wimlib-imagex", "wimlib-imagex", "libwimlib-imagex.so", ToolCategory.OTHER, "WIM 释放 / 提取 / 捕获", listOf("--version"))
+
     val ALL: List<NativeTool> = listOf(
         QEMU_IMG, QEMU_IO,
         MKE2FS, E2FSCK, DEBUGFS, DUMPE2FS, RESIZE2FS, TUNE2FS,
         MKFS_FAT, FSCK_FAT, MCOPY, MDIR, MDEL, MMD,
         MKNTFS, NTFSLS, NTFSCAT, NTFSCP, NTFSFIX,
         XORRISO,
+        WIMLIB,
     )
 
     private val cache = ConcurrentHashMap<String, File?>()

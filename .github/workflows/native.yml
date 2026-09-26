@@ -17,9 +17,9 @@ on:
           - armeabi-v7a
           - x86_64
       targets:
-        description: 'Build stages (space separated: deps qemu fstools xorriso)'
+        description: 'Build stages (space separated: deps qemu fstools xorriso wimlib)'
         required: false
-        default: 'deps qemu fstools xorriso'
+        default: 'deps qemu fstools xorriso wimlib'
         type: string
   workflow_call:
     inputs:
@@ -30,7 +30,7 @@ on:
       targets:
         required: false
         type: string
-        default: 'deps qemu fstools xorriso'
+        default: 'deps qemu fstools xorriso wimlib'
 
 permissions:
   contents: read
@@ -38,7 +38,7 @@ permissions:
 env:
   ANDROID_NDK_ROOT: ${{ github.workspace }}/android-ndk
   ABI: ${{ inputs.abi || 'arm64-v8a' }}
-  TARGETS: ${{ inputs.targets || 'deps qemu fstools xorriso' }}
+  TARGETS: ${{ inputs.targets || 'deps qemu fstools xorriso wimlib' }}
 
 jobs:
   build:

@@ -56,6 +56,20 @@ if patched == 0:
     raise SystemExit('xorriso: no nl_langinfo users found to patch')
 PY
 
+# bionic dropped wait3() entirely (only waitpid() and wait4() exist). The single call site just
+# reaps any dead child without looking at its status, which is exactly waitpid(-1, ..., WNOHANG).
+python3 - <<'PY'
+import pathlib
+f = pathlib.Path('xorriso/parse_exec.c')
+if not f.exists():
+    raise SystemExit('xorriso: xorriso/parse_exec.c not found')
+text = f.read_text()
+old = 'wait3(NULL,WNOHANG,NULL)'
+if old in text:
+    f.write_text(text.replace(old, 'waitpid(-1,NULL,WNOHANG)'))
+    print('patched xorriso/parse_exec.c: wait3() -> waitpid(-1, ...) for bionic')
+PY
+
 # xorriso brings its own libburn/libisofs; optical device support is irrelevant
 # on Android, ACL/xattr support is unavailable on bionic.
 #

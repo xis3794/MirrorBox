@@ -70,6 +70,17 @@ if old in text:
     print('patched xorriso/parse_exec.c: wait3() -> waitpid(-1, ...) for bionic')
 PY
 
+# bionic folds pthread into libc, so there is no libpthread for the linker to find while xorriso's
+# link line asks for -lpthread unconditionally. Provide a stub archive, exactly like the librt
+# stub used for QEMU; every pthread symbol it would have provided already lives in libc.
+PTHREAD_STUB="${PREFIX}/lib/libpthread.a"
+if [[ ! -f "${PTHREAD_STUB}" ]]; then
+  printf 'void mirrorbox_libpthread_stub(void) {}\n' > "${BUILD_DIR}/libpthread_stub.c"
+  "${CC}" -c -o "${BUILD_DIR}/libpthread_stub.o" "${BUILD_DIR}/libpthread_stub.c"
+  "${AR}" rcs "${PTHREAD_STUB}" "${BUILD_DIR}/libpthread_stub.o"
+  log "created stub ${PTHREAD_STUB} (bionic has no separate libpthread)"
+fi
+
 # xorriso brings its own libburn/libisofs; optical device support is irrelevant
 # on Android, ACL/xattr support is unavailable on bionic.
 #
@@ -78,12 +89,16 @@ PY
 # the dependency stage is linked instead — exactly the -I/-L/-liconv recipe its own error
 # message suggests. Without it the only alternative is XORRISO_ASSUME_ICONV=yes, which would
 # silently build an ISO writer with broken non-ASCII file names.
+# --disable-shared is required. libburn/libisofs/libisoburn are noinst libraries, so a shared
+# build links xorriso against .so files that are never installed and never reach jniLibs (the
+# same trap that made the ntfsprogs tools unusable), while libtool hides it behind a wrapper.
 CFLAGS="${CFLAGS_COMMON} -I${PREFIX}/include" \
   CPPFLAGS="-I${PREFIX}/include" \
   LDFLAGS="${LDFLAGS_COMMON} -L${PREFIX}/lib" \
   LIBS="-liconv" \
   ./configure --host="${TRIPLE}" --prefix="${PREFIX}" \
   --disable-libacl --disable-xattr --disable-libreadline --disable-libedit \
+  --disable-shared --enable-static \
   > "${LOG_DIR}/xorriso-configure.log" 2>&1 || { tail -60 "${LOG_DIR}/xorriso-configure.log" >&2; exit 1; }
 
 make -j"${JOBS}" > "${LOG_DIR}/xorriso-make.log" 2>&1 || { tail -80 "${LOG_DIR}/xorriso-make.log" >&2; exit 1; }
@@ -102,4 +117,11 @@ fi
 [[ -n "${BIN}" ]] || { warn "xorriso build produced no executable"; exit 1; }
 
 package_tool "xorriso" "${BIN}"
+
+# Regression guard for the noinst-library trap described above.
+if command -v llvm-readelf > /dev/null 2>&1 && \
+   llvm-readelf -d "${OUT_DIR}/${ABI}/tools/libxorriso.so" 2>/dev/null | grep -Eq 'libisofs|libisoburn|libburn'; then
+  warn "libxorriso.so still links against an uninstalled internal library"
+  exit 1
+fi
 log "xorriso packaged"

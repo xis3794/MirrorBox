@@ -88,7 +88,11 @@ build_libiconv() {
 # GLib needs a lot of care on bionic: meson is used (autotools is deprecated),
 # and the resulting .so files must be unversioned for Android packaging.
 build_glib() {
-  if [[ -f "${PREFIX}/lib/libglib-2.0.so" ]]; then
+  # The stamp is what makes a cached native/out rebuild: the restored cache already contains the
+  # .so files, so "the file exists" alone would skip the (re)normalisation that patchelf does.
+  # Bump the stamp name whenever the libraries have to be regenerated, e.g. after the patchelf
+  # segment-alignment fix that produced the ".glib-normalized-v2" generation.
+  if [[ -f "${PREFIX}/lib/libglib-2.0.so" && -f "${OUT_DIR}/${ABI}/.glib-normalized-v2" ]]; then
     log "glib already built (cached)"
     return 0
   fi
@@ -160,10 +164,15 @@ EOF
     fi
     break
   done
+
+  # Marks the .so files of this generation as normalised; see the guard at the top.
+  touch "${OUT_DIR}/${ABI}/.glib-normalized-v2"
 }
 
 main() {
   log "building shared dependencies for ${ABI}"
+  # Fail fast: an old patchelf silently produces libraries the Android linker cannot map.
+  require_patchelf || exit 1
   build_zlib
   build_zstd
   build_pcre2

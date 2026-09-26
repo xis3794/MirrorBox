@@ -52,12 +52,20 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential autoconf automake libtool pkg-config \
-            gettext texinfo bison flex file zip unzip wget curl patchelf
+            gettext texinfo bison flex file zip unzip wget curl
           python3 -m pip install --quiet --upgrade pip
           # QEMU's python/qemu.qmp module is installed with 'pip --no-build-isolation -e',
           # which needs a PEP 660 capable backend: setuptools >= 64 (Ubuntu 22.04 ships 59,
           # which silently lacks build_editable) plus meson-python for safety.
           python3 -m pip install --quiet --upgrade "setuptools>=64" wheel meson ninja meson-python pycotap
+          # patchelf 0.14.2 (what apt ships here) appends a loadable segment that violates the ELF
+          # congruence rule p_vaddr ≡ p_offset (mod p_align). The Android linker then maps the
+          # dynamic section from the wrong file offset, so the libraries fail on device with
+          # "unused DT entry: unknown (type0x5858...)" / "empty/missing DT_HASH/DT_GNU_HASH".
+          # The PyPI wheel ships a current build; require_patchelf() re-checks it during the build.
+          python3 -m pip install --quiet --user patchelf
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           python3 -c "import setuptools, mesonpy; print('setuptools', setuptools.__version__)"
           meson --version
           ninja --version

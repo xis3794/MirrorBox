@@ -46,8 +46,14 @@ export LD="${TOOLCHAIN}/bin/ld.lld"
 # NOTE: __ANDROID_API__ is deliberately not defined here — the NDK's clang wrappers
 # (aarch64-linux-android24-clang) already define it, and defining it again triggers
 # `-Werror,-Wmacro-redefined` inside meson/glib's compiler probes.
+# 16 KB is the page size Android requires on newer devices: every loadable segment has to be
+# aligned to it. patchelf must be told the same value through --page-size (see normalize_so),
+# otherwise it appends a segment that violates the ELF congruence rule and the Android linker
+# maps the dynamic section from the wrong file offset (see check-elf.py).
+export MAX_PAGE_SIZE=16384
+
 export CFLAGS_COMMON="-O2 -fPIC -fstack-protector-strong"
-export LDFLAGS_COMMON="-Wl,-z,max-page-size=16384"
+export LDFLAGS_COMMON="-Wl,-z,max-page-size=${MAX_PAGE_SIZE}"
 
 # Exported so that autotools based components (libffi, pcre2, e2fsprogs, mtools, …) pick up the
 # cross flags without having to pass them explicitly.
@@ -57,6 +63,30 @@ export LDFLAGS="${LDFLAGS_COMMON}"
 
 log() { printf '\033[1;36m[native]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[native]\033[0m %s\n' "$*" >&2; }
+
+# patchelf older than 0.18 (Ubuntu 22.04 ships 0.14.2) mis-places the loadable segment it appends
+# to a library: p_vaddr and p_offset stop being congruent modulo p_align, and the Android linker
+# then maps the dynamic section from the wrong file offset. The library still passes every
+# packaging check but cannot be loaded on device. The PyPI wheel ships a current build:
+#   python3 -m pip install --user patchelf
+require_patchelf() {
+  local version
+  if ! command -v patchelf > /dev/null 2>&1; then
+    warn "patchelf not found; install it with: python3 -m pip install --user patchelf"
+    return 1
+  fi
+  version="$(patchelf --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+  if [[ -z "${version}" ]]; then
+    warn "cannot determine the patchelf version"
+    return 1
+  fi
+  if [[ "$(printf '%s\n%s\n' "0.18" "${version}" | sort -V | head -n1)" != "0.18" ]]; then
+    warn "patchelf ${version} is too old (need >= 0.18): it produces ELF segment tables the Android linker cannot map"
+    warn "install a current one with: python3 -m pip install --user patchelf"
+    return 1
+  fi
+  return 0
+}
 
 mkdir -p "${SRC_DIR}" "${BUILD_DIR}" "${PREFIX}" "${OUT_DIR}/${ABI}/tools"
 
@@ -120,18 +150,23 @@ normalize_so() {
       local dir
       dir="$(dirname "${file}")"
       cp -f "${file}" "${dir}/${unversioned}"
-      patchelf --set-soname "${unversioned}" "${dir}/${unversioned}" || true
+      patchelf --page-size "${MAX_PAGE_SIZE}" --set-soname "${unversioned}" "${dir}/${unversioned}" || true
       log "normalized ${base} -> ${unversioned}"
       file="${dir}/${unversioned}"
     fi
   fi
 
-  patchelf --set-rpath '$ORIGIN' "${file}" 2>/dev/null || true
-  # Huawei devices' linker chokes on glibc style versioned symbols coming from glib.
-  patchelf --replace-symbol _rwlock_trywrlock pthread_rwlock_trywrlock "${file}" 2>/dev/null || true
-  patchelf --replace-symbol _rwlock_rdlock pthread_rwlock_rdlock "${file}" 2>/dev/null || true
-  patchelf --replace-symbol _rwlock_wrlock pthread_rwlock_wrlock "${file}" 2>/dev/null || true
-  patchelf --replace-symbol _rwlock_unlock pthread_rwlock_unlock "${file}" 2>/dev/null || true
+  # --page-size must match the -Wl,-z,max-page-size used when linking. Without it patchelf places
+  # the appended segment at a p_vaddr/p_offset pair that is not congruent modulo p_align, and the
+  # Android linker then reads the dynamic section from the wrong file offset: the library looks
+  # intact in every packaging check yet fails on device with
+  #   "unused DT entry: unknown (type0x5858...)" / "empty/missing DT_HASH/DT_GNU_HASH".
+  patchelf --page-size "${MAX_PAGE_SIZE}" --set-rpath '$ORIGIN' "${file}" 2>/dev/null || true
+
+  # NOTE: the Limbo-era "_rwlock_* -> pthread_rwlock_*" step was done with `--replace-symbol`,
+  # which patchelf does not have (the option was silently ignored, so it never did anything).
+  # It is also unnecessary here: bionic exports no _rwlock_* symbols, so a reference to one would
+  # have failed the link outright — and the link is clean.
   echo "${file}"
 }
 
@@ -152,7 +187,7 @@ fix_needed() {
     for target in "${dir}"/lib*.so*; do
       [[ -e "${target}" ]] || continue
       [[ "$(basename "${target}")" == "${unversioned}" ]] && continue
-      patchelf --replace-needed "$(basename "${target}")" "${unversioned}" "${target}" 2>/dev/null || true
+      patchelf --page-size "${MAX_PAGE_SIZE}" --replace-needed "$(basename "${target}")" "${unversioned}" "${target}" 2>/dev/null || true
     done
   done
 }

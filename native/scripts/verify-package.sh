@@ -35,6 +35,13 @@ if (( ${#versioned[@]} > 0 )); then
   FAILED=1
 fi
 
+# Structural ELF check: the Android linker only maps files whose loadable segments are congruent
+# (p_vaddr ≡ p_offset mod p_align). A patchelf rewrite once broke exactly this and produced
+# libraries that passed every other check yet could not be loaded on device.
+if ! python3 "${SCRIPT_DIR}/check-elf.py" -q "${TOOLS_DIR}"/*; then
+  FAILED=1
+fi
+
 # Every DT_NEEDED of every shipped object must be resolved either by Android's own libraries or
 # by another file in this same directory (the tools are extracted side by side into
 # nativeLibraryDir).

@@ -161,9 +161,10 @@ package_tool "qemu-img" "${BUILD_DIR}/qemu/build/qemu-img"
 # QEMU's meson build appends its own rpath entry (the CI prefix path) next to ours. That entry is
 # dead on device and leaks build paths, so the shipped binaries are reduced to $ORIGIN only —
 # their real dependencies (libglib-2.0.so, libzstd.so, libintl.so) live in the same directory.
+# --page-size keeps patchelf inside the same alignment regime the binaries were linked with.
 for t in qemu-img qemu-io; do
   f="${OUT_DIR}/${ABI}/tools/lib${t}.so"
-  [[ -f "${f}" ]] && patchelf --set-rpath '$ORIGIN' "${f}" 2>/dev/null || true
+  [[ -f "${f}" ]] && patchelf --page-size "${MAX_PAGE_SIZE}" --set-rpath '$ORIGIN' "${f}" 2>/dev/null || true
 done
 
 log "qemu-img built: $("${OUT_DIR}/${ABI}/tools/libqemu-img.so" --version 2>/dev/null || echo 'cannot run on build host (expected for cross builds)')"

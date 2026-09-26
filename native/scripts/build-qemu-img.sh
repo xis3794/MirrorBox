@@ -63,6 +63,16 @@ done
 export PATH="${OUT_DIR}/${ABI}/bin:${PATH}"
 log "pkg-config shim installed: ${OUT_DIR}/${ABI}/bin/${TRIPLE}-pkg-config"
 
+# bionic folds librt into libc, but QEMU's meson requires cc.find_library('rt').
+# Provide a stub archive so the lookup succeeds; the symbols it would provide are already in libc.
+RT_STUB="${PREFIX}/lib/librt.a"
+if [[ ! -f "${RT_STUB}" ]]; then
+  printf 'void mirrorbox_librt_stub(void) {}\n' > "${BUILD_DIR}/librt_stub.c"
+  "${CC}" -c -o "${BUILD_DIR}/librt_stub.o" "${BUILD_DIR}/librt_stub.c"
+  "${AR}" rcs "${RT_STUB}" "${BUILD_DIR}/librt_stub.o"
+  log "created stub ${RT_STUB} (bionic has no separate librt)"
+fi
+
 # bionic has no makecontext/swapcontext, so QEMU's ucontext coroutine backend cannot work on
 # Android; sigaltstack is the available (and thread-safe) alternative.
 ./configure \

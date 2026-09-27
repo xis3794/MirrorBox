@@ -59,6 +59,8 @@ PY
 head -c 2000000 /dev/urandom > src/Windows/System32/kernel32.dll
 head -c 1500000 /dev/urandom > src/Windows/System32/ntdll.dll
 head -c  300000 /dev/urandom > src/Windows/System32/ntoskrnl.exe
+# 一个很小的"常驻"文件：用来覆盖 MAP 的常驻分支（数据直接存在 MFT 记录里）
+printf 'MIRRORBOX-RESIDENT-DATA' > src/Windows/small.txt
 "${TOOL}" "${IMG}" src > apply.log 2>&1 || { tail -5 apply.log; die "目录树写入失败"; }
 log "   $(tail -1 apply.log)"
 
@@ -137,17 +139,41 @@ print('已就地改写 disk_off=%d' % (target[0] + (i - fo)))
 PY
 
 log "6) 用完整镜像确认就地改写生效"
-"${TOOL}" "${IMG}" --dump 'Boot/BCD' after.bcd > /dev/null 2>&1
+if ! "${TOOL}" "${IMG}" --dump 'Boot/BCD' after.bcd > dump_after.log 2>&1; then
+  tail -20 dump_after.log
+  die "从完整镜像读取 Boot/BCD 失败（就地改写之后）"
+fi
+tail -2 dump_after.log
+ls -l after.bcd
 python3 - "${WORK}" <<'PY'
 import sys
 work = sys.argv[1]
 b = open(work + '/after.bcd', 'rb').read()
 n = '\\Device\\HarddiskVolume'.encode('utf-16-le')
 i = b.find(n)
+assert i >= 0, '完整镜像里找不到设备项（dump 出 %d 字节）' % len(b)
 text = b[i:i + len(n) + 2].decode('utf-16-le')
 print('  完整镜像里现在是:', repr(text))
 if not text.endswith('2'):
     raise SystemExit('就地改写没有生效')
+PY
+
+log "7) 常驻文件（数据存在 MFT 记录里）的 MAP 也要正确"
+"${TOOL}" "${IMG}" --dump 'Windows/small.txt' small.bin 2>/dev/null | grep '^MAP ' > small.map || true
+[[ -s small.map ]] || die "常驻文件没有输出 MAP"
+cat small.map
+cmp -s src/Windows/small.txt small.bin || die "常驻文件 dump 内容不一致"
+python3 - "${WORK}" <<'PY'
+import sys
+work = sys.argv[1]
+p = open(work + '/small.map').read().split()
+fo, disk, ln = int(p[1]), int(p[2]), int(p[3])
+src = open(work + '/src/Windows/small.txt', 'rb').read()
+with open(work + '/full.img', 'rb') as f:
+    f.seek(disk)
+    got = f.read(ln)
+assert got == src[fo:fo + ln], '常驻 MAP 位置不正确: disk=%d len=%d' % (disk, ln)
+print('常驻 MAP 校验通过：disk=%d len=%d' % (disk, ln))
 PY
 
 log "全部通过 ✓（${rounds} 轮，补齐 $(awk -v b="${materialized}" 'BEGIN{printf "%.2f", b/1048576}') MiB）"

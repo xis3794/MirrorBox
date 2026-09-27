@@ -586,8 +586,12 @@ static void print_map(ntfs_attr *na, const char *guest)
 				u16 voff;
 				memcpy(&vlen, m + ao + 0x10, 4);
 				memcpy(&voff, m + ao + 0x14, 2);
-				printf("MAP 0 %lld %lld\n", (long long)(disk + voff),
+				/* voff 是相对**属性记录**的偏移，所以要加上 ao 才是记录内偏移 */
+				printf("MAP 0 %lld %lld\n", (long long)(disk + ao + voff),
 				       (long long)vlen);
+				DBG("  resident $DATA: rec=%lld attr=+0x%x value=+0x%x -> %lld\n",
+				    (long long)disk, (unsigned)ao, (unsigned)voff,
+				    (long long)(disk + ao + voff));
 				found = 1;
 				break;
 			}

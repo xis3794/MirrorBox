@@ -27,7 +27,7 @@ class BcdDeviceStructTest {
         put32(b, 0x18, 0x48)
         put64(b, 0x20, offset)
         put32(b, 0x34, 1)
-        put32(b, 0x38, signature)
+        put32(b, 0x38, signature.toInt())
         return b
     }
 

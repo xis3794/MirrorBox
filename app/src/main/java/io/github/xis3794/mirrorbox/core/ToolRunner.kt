@@ -76,6 +76,7 @@ object ToolRunner {
         tool: NativeTool,
         args: List<String>,
         cwd: File? = null,
+        timeoutMs: Long = 0L,
         onLine: (String) -> Unit = {},
     ): ToolResult {
         val exe = NativeTools.resolve(context, tool)
@@ -87,7 +88,20 @@ object ToolRunner {
                 lines.add(line)
                 onLine(line)
             }
-            val code = process.waitFor()
+            val code = if (timeoutMs > 0L) {
+                // 原生工具理论上都会自己结束；万一因为镜像损坏卡在死循环里，这里兜底，
+                // 免得把整个界面（以及设备）拖住。
+                if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    process.destroyForcibly()
+                    process.waitFor(5, TimeUnit.SECONDS)
+                    lines.add("工具 ${tool.displayName} 超过 ${timeoutMs / 1000} 秒没有结束，已强制终止")
+                    -2
+                } else {
+                    process.exitValue()
+                }
+            } else {
+                process.waitFor()
+            }
             ToolResult(code, lines)
         } catch (t: Throwable) {
             ToolResult(-1, listOf("执行 ${tool.displayName} 失败：${t.message}"))

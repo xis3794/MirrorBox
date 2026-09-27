@@ -25,22 +25,49 @@ import java.nio.charset.Charset
  * 两种修法：
  *  ① **签名对齐（首选，几乎零成本）**：从 BCD 读出它期望的磁盘签名，把我们的 MBR 磁盘签名
  *     （bytes 440..443）改成那个值；
- *  ② 文本形式（`\Device\HarddiskVolumeN`）时直接改卷号。
+ *  ② 文本形式（`\Device\HarddiskVolumeN`）时直接改卷号 —— 因为 BCD 里的数据长度不变，
+ *     可以**就地改写**（按工具给出的物理位置写回那几个字节，不需要重建文件系统元数据）。
  *
- * 读取方式：**不提取整个分区** —— 只提取分区开头一小段窗口（64 MiB 起，按需放大），文件长度
- * 仍设成分区大小，然后用自带工具 `mirrorbox-ntfs --dump` 在进程内把文件读出来。只读不回写。
+ * ## 怎么读到 BCD（关键）
+ *
+ * NTFS 的元数据是散在整个卷里的 —— mkntfs 把 $MFTMirr/$LogFile 放在卷中部（10 GB 卷 ≈ 5 GB 处），
+ * $AttrDef/$Bitmap/$Secure/$UpCase 放在 1/8 处。所以：
+ *  - 提取整个分区不行（Win7 装完好几 GB，手机没那么多临时空间）；
+ *  - 只提取"开头 64 MiB"也不行（libntfs-3g 挂载时一定要读 $MFTMirr 和 $UpCase）。
+ *
+ * 做法改成**按需索取**：`mirrorbox-ntfs` 用自定义 device 包住这个稀疏窗口文件，只信任
+ * `--regions` 列出的范围；越界读取会被记为 `NEED off len` 并以退出码 10 结束。我们把这些
+ * 区域从 qcow2 里补进窗口再重跑，通常 2~5 轮、几百 KB 就能读出 BCD。读取是只读的，
+ * 全程不会碰用户镜像里的其它数据。
  */
 object BcdFix {
 
     private const val PREFIX = "\\Device\\HarddiskVolume"
     private val UTF16 = Charset.forName("UTF-16LE")
 
-    /** 读取窗口候选（MiB）：64 → 256 → 1024 */
-    val WINDOWS = listOf(64L, 256L, 1024L)
+    /** 按需区域的硬上限：正常只要几百 KB，超过说明出问题了，及时放弃而不是把存储塞满。 */
+    private const val MAX_WINDOW_BYTES = 32L * 1024 * 1024
+
+    /** 补齐-重跑的最大轮数。 */
+    private const val MAX_ROUNDS = 16
+
+    /** 单次工具调用的超时（镜像损坏时工具可能陷在死循环里）。 */
+    private const val TOOL_TIMEOUT_MS = 90_000L
 
     data class Found(val offset: Int, val text: String, val volume: Int)
 
     data class Signature(val foundAt: Int, val expected: Long, val offsetMatched: String)
+
+    /** 文件内偏移 → 卷内物理偏移（就地改写用）。 */
+    data class MapSegment(val fileOffset: Long, val diskOffset: Long, val length: Long)
+
+    /** 读出来的 BCD 及其在卷里的物理位置。 */
+    data class Dump(
+        val bytes: ByteArray,
+        val segments: List<MapSegment>,
+        val windowBytes: Long,
+        val rounds: Int,
+    )
 
     data class Report(
         val sizeBytes: Long,
@@ -223,51 +250,183 @@ object BcdFix {
         return if (ok) "BCD 卷号已改为分区 $targetPartition：${notes.joinToString("；")}" else "写入 BCD 失败"
     }
 
-    // ------------------------------------------------------------------ 已有分区：窗口读取
+    // ------------------------------------------------------------------ 已有分区：按需区域读取
 
-    private suspend fun readBcdViaWindow(
+    private class Window {
+        private val ranges = ArrayList<LongArray>()
+
+        fun covers(off: Long, len: Long): Boolean =
+            ranges.any { off >= it[0] && off + len <= it[0] + it[1] }
+
+        fun add(off: Long, len: Long) {
+            ranges.add(longArrayOf(off, len))
+        }
+
+        fun total(): Long = ranges.sumOf { it[1] }
+
+        fun save(file: File) {
+            file.writeText(ranges.joinToString("\n") { "${it[0]} ${it[1]}" })
+        }
+    }
+
+    /** 从 qcow2 里把 [off, off+len) 抽进稀疏窗口文件（全 0 的块留空洞，不占空间）。 */
+    private fun materialize(
+        img: Qcow2Image,
+        entry: PartitionEntry,
+        off: Long,
+        len: Long,
+        raw: File,
+    ): Boolean = runCatching {
+        RandomAccessFile(raw, "rw").use { raf ->
+            val chunk = 1L shl 20
+            var pos = 0L
+            while (pos < len) {
+                val want = minOf(chunk, len - pos).toInt()
+                val bytes = img.readBytes(entry.startByte + off + pos, want)
+                if (bytes.isEmpty()) break
+                raf.seek(off + pos)
+                if (bytes.any { it.toInt() != 0 }) raf.write(bytes)
+                pos += bytes.size
+            }
+        }
+        true
+    }.getOrElse { false }
+
+    /**
+     * 从引导扇区推出来的"必读区域"猜测（少跑几轮）：引导扇区、$MFT 前 1 MiB、
+     * 以及 mkntfs 放置元数据的 1/8 与 1/2 处。猜错只是多读一点，不影响正确性。
+     */
+    private fun primeRegions(img: Qcow2Image, entry: PartitionEntry): List<LongArray> {
+        val out = ArrayList<LongArray>()
+        out.add(longArrayOf(0L, 64L * 1024))
+        val bs = runCatching { img.readBytes(entry.startByte, 512) }.getOrNull() ?: return out
+        if (bs.size < 512 || String(bs, 3, 4, Charsets.US_ASCII) != "NTFS") return out
+        val bps = (bs[0x0b].toInt() and 0xff) or ((bs[0x0c].toInt() and 0xff) shl 8)
+        val spc = bs[0x0d].toInt() and 0xff
+        val cluster = (bps.toLong() * spc).coerceAtLeast(512L)
+        fun u64(at: Int): Long {
+            var v = 0L
+            for (i in 7 downTo 0) v = (v shl 8) or (bs[at + i].toLong() and 0xff)
+            return v
+        }
+        val totalSectors = u64(0x28)
+        val mftOff = u64(0x30) * cluster
+        val clusters = if (spc > 0) totalSectors / spc else 0L
+        out.add(longArrayOf(mftOff, 1024L * 1024))
+        if (clusters > 0) {
+            out.add(longArrayOf(clusters / 8 * cluster, 512L * 1024))
+            out.add(longArrayOf(clusters / 2 * cluster, 64L * 1024))
+        }
+        return out
+    }
+
+    private fun parseNeed(line: String): LongArray? {
+        if (!line.startsWith("NEED ")) return null
+        val p = line.removePrefix("NEED ").trim().split(' ')
+        if (p.size < 2) return null
+        val off = p[0].toLongOrNull() ?: return null
+        val len = p[1].toLongOrNull() ?: return null
+        return if (len > 0) longArrayOf(off, len) else null
+    }
+
+    private fun parseMap(line: String): MapSegment? {
+        if (!line.startsWith("MAP ")) return null
+        val p = line.removePrefix("MAP ").trim().split(' ')
+        if (p.size < 3) return null
+        val fo = p[0].toLongOrNull() ?: return null
+        val disk = p[1].toLongOrNull() ?: return null
+        val len = p[2].toLongOrNull() ?: return null
+        return if (len > 0) MapSegment(fo, disk, len) else null
+    }
+
+    /** 按需读取分区里的 `\Boot\BCD`；读不到返回 null（日志里会有原因）。 */
+    suspend fun readBcd(
         context: Context,
         image: File,
         entry: PartitionEntry,
-        windowMiB: Long,
         onLog: (String) -> Unit,
-    ): ByteArray? {
-        val windowBytes = minOf(entry.sizeBytes, windowMiB * 1024 * 1024)
-        val raw = File(AppPaths.tmp, "bcdw-${entry.index}-${System.currentTimeMillis()}.raw")
+    ): Dump? = Qcow2Image.open(image).use { img ->
+        val stamp = System.currentTimeMillis()
+        val raw = File(AppPaths.tmp, "bcdw-$stamp.raw")
+        val reg = File(AppPaths.tmp, "bcdw-$stamp.regions")
+        val out = File(AppPaths.tmp, "bcdw-$stamp.bcd")
+        val window = Window()
         try {
-            onLog("读取分区 ${entry.index} 头部 ${Fmt.size(windowBytes)}（分区共 ${Fmt.size(entry.sizeBytes)}）")
-            if (!EditOps.extractRange(image, entry.startByte, windowBytes, raw, null)) {
-                onLog("提取窗口失败（临时空间不足？）")
-                return null
-            }
-            // 文件长度必须是整个分区大小，NTFS 才能挂载；窗口之外保持稀疏（读为 0 不影响读 BCD）
+            // 长度必须是整个分区大小（NTFS 才知道卷多大），数据只写需要的区域，其余是空洞。
             RandomAccessFile(raw, "rw").use { it.setLength(entry.sizeBytes) }
-            return readViaTool(context, raw, onLog)
+            for (r in primeRegions(img, entry)) {
+                val off = r[0]
+                val len = minOf(r[1], entry.sizeBytes - off)
+                if (off < 0 || len <= 0) continue
+                if (materialize(img, entry, off, len, raw)) window.add(off, len)
+            }
+            onLog("按需读取 \\Boot\\BCD（分区 ${Fmt.size(entry.sizeBytes)}，窗口随需增长）…")
+
+            var rounds = 0
+            while (rounds < MAX_ROUNDS) {
+                rounds++
+                window.save(reg)
+                val res = ToolRunner.run(
+                    context,
+                    NativeTools.NTFS_APPLY,
+                    listOf(
+                        raw.absolutePath, "--regions", reg.absolutePath,
+                        "--dump", "Boot/BCD", out.absolutePath,
+                    ),
+                    timeoutMs = TOOL_TIMEOUT_MS,
+                    onLine = { line -> if (!line.startsWith("NEED ")) onLog(line) },
+                )
+                if (res.exitCode == 0 && out.length() > 0L) {
+                    val segments = res.lines.mapNotNull { parseMap(it) }
+                    onLog(
+                        "已读出 Boot/BCD（${Fmt.size(out.length())}）：第 $rounds 轮，" +
+                            "窗口 ${Fmt.size(window.total())}，物理位置 ${segments.size} 段",
+                    )
+                    return Dump(out.readBytes(), segments, window.total(), rounds)
+                }
+                val needs = res.lines.mapNotNull { parseNeed(it) }
+                    .map { longArrayOf(it[0], minOf(it[1], entry.sizeBytes - it[0])) }
+                    .filter { it[1] > 0 && !window.covers(it[0], it[1]) }
+                if (needs.isEmpty()) {
+                    onLog("工具没有再要新的区域（rc=${res.exitCode}）：${res.lines.lastOrNull().orEmpty()}")
+                    return null
+                }
+                var added = 0L
+                for (n in needs) {
+                    if (window.total() + n[1] > MAX_WINDOW_BYTES) {
+                        onLog("还需要 ${Fmt.size(window.total() + n[1])}，超过 ${Fmt.size(MAX_WINDOW_BYTES)} 上限，放弃")
+                        return null
+                    }
+                    if (materialize(img, entry, n[0], n[1], raw)) {
+                        window.add(n[0], n[1])
+                        added += n[1]
+                    }
+                }
+                if (added == 0L) {
+                    onLog("补齐区域失败（临时空间不足？）")
+                    return null
+                }
+                onLog("第 $rounds 轮：补齐 ${Fmt.size(added)} 元数据（窗口共 ${Fmt.size(window.total())}）")
+            }
+            onLog("超过 $MAX_ROUNDS 轮仍未读出 BCD")
+            null
         } finally {
             raw.delete()
+            reg.delete()
+            out.delete()
         }
     }
 
-    /** 用自带的 mirrorbox-ntfs（libntfs-3g，进程内）导出 `Boot\BCD`。 */
-    private suspend fun readViaTool(context: Context, raw: File, onLog: (String) -> Unit): ByteArray? {
-        val out = File(AppPaths.tmp, "bcd-dump-${System.currentTimeMillis()}.bin")
-        try {
-            val result = ToolRunner.run(
-                context,
-                NativeTools.NTFS_APPLY,
-                listOf(raw.absolutePath, "--dump", "Boot/BCD", out.absolutePath),
-                onLine = onLog,
-            )
-            if (result.success && out.length() > 0) {
-                onLog("已读出 Boot/BCD（${Fmt.size(out.length())}）")
-                return out.readBytes()
-            }
-            onLog("--dump 失败：${result.lines.lastOrNull().orEmpty()}")
-        } finally {
-            out.delete()
+    /** 读取当前 MBR 磁盘签名。 */
+    fun currentSignature(image: File): Long = runCatching {
+        Qcow2Image.open(image).use { img ->
+            val mbr = img.readBytes(0L, 512)
+            (mbr[440].toLong() and 0xff) or
+                ((mbr[441].toLong() and 0xff) shl 8) or
+                ((mbr[442].toLong() and 0xff) shl 16) or
+                ((mbr[443].toLong() and 0xff) shl 24)
         }
-        return null
-    }
+    }.getOrDefault(0L)
 
     suspend fun analyzeInPartition(
         context: Context,
@@ -275,27 +434,20 @@ object BcdFix {
         entry: PartitionEntry,
         onLog: (String) -> Unit = {},
     ): Report {
-        var bytes: ByteArray? = null
-        for (window in WINDOWS) {
-            bytes = readBcdViaWindow(context, image, entry, window, onLog)
-            if (bytes != null) break
-            onLog("窗口 ${window} MiB 内没读到，扩大窗口重试…")
-        }
-        if (bytes == null) {
-            return Report(
-                0, emptyList(), emptyList(), currentSignature(image), "",
+        val current = currentSignature(image)
+        val dump = readBcd(context, image, entry, onLog)
+            ?: return Report(
+                0, emptyList(), emptyList(), current, "",
                 "没读到 \\Boot\\BCD：分区里可能没有它（那就得用 Win7 安装盘的「启动修复」/ bcdboot）",
             )
-        }
-        val refs = scan(bytes)
-        val sigs = candidateSignatures(bytes, entry.startByte, entry.startLba)
-        val current = currentSignature(image)
+        val refs = scan(dump.bytes)
+        val sigs = candidateSignatures(dump.bytes, entry.startByte, entry.startLba)
         return Report(
-            sizeBytes = bytes.size.toLong(),
+            sizeBytes = dump.bytes.size.toLong(),
             volumeRefs = refs,
             signatures = sigs,
             currentDiskSignature = current,
-            hexPreview = hexPreview(bytes),
+            hexPreview = hexPreview(dump.bytes),
             summary = describe(refs, sigs) + "；本磁盘签名 " + String.format("0x%08X", current),
         )
     }
@@ -307,17 +459,12 @@ object BcdFix {
         entry: PartitionEntry,
         onLog: (String) -> Unit = {},
     ): String {
-        var bytes: ByteArray? = null
-        for (window in WINDOWS) {
-            bytes = readBcdViaWindow(context, image, entry, window, onLog)
-            if (bytes != null) break
-        }
-        val data = bytes ?: return "没读到 BCD，无法导出"
+        val dump = readBcd(context, image, entry, onLog) ?: return "没读到 BCD，无法导出"
         val dir = GuestFsOps.publicExportDir() ?: File(AppPaths.externalRoot(), "bcd").apply { mkdirs() }
         val out = File(dir, "BCD-p${entry.index}.bin")
         return runCatching {
-            out.writeBytes(data)
-            "已导出 ${data.size} 字节 → ${out.absolutePath}"
+            out.writeBytes(dump.bytes)
+            "已导出 ${dump.bytes.size} 字节 → ${out.absolutePath}"
         }.getOrElse { "导出失败：${it.message}" }
     }
 
@@ -344,18 +491,11 @@ object BcdFix {
         }
     }
 
-    /** 读取当前 MBR 磁盘签名。 */
-    fun currentSignature(image: File): Long = runCatching {
-        Qcow2Image.open(image).use { img ->
-            val mbr = img.readBytes(0L, 512)
-            (mbr[440].toLong() and 0xff) or
-                ((mbr[441].toLong() and 0xff) shl 8) or
-                ((mbr[442].toLong() and 0xff) shl 16) or
-                ((mbr[443].toLong() and 0xff) shl 24)
-        }
-    }.getOrDefault(0L)
-
-    /** 文本卷号形式的就地修复（窗口读写，只动窗口内的簇）。 */
+    /**
+     * 文本卷号形式的就地修复：读出 BCD → 改卷号 → **只把变化的字节写回它在卷里的物理位置**。
+     *
+     * 因为长度不变，不需要动 NTFS 的任何元数据（也不需要可写挂载）。
+     */
     suspend fun fixVolumeInPartition(
         context: Context,
         image: File,
@@ -363,36 +503,40 @@ object BcdFix {
         targetVolume: Int,
         onLog: (String) -> Unit = {},
     ): String {
-        val windowBytes = minOf(entry.sizeBytes, WINDOWS.first() * 1024 * 1024)
-        val raw = File(AppPaths.tmp, "bcdw-${entry.index}-${System.currentTimeMillis()}.raw")
-        try {
-            onLog("提取分区 ${entry.index} 头部 ${Fmt.size(windowBytes)}")
-            if (!EditOps.extractRange(image, entry.startByte, windowBytes, raw, null)) {
-                return "提取窗口失败（本机临时空间不足）"
+        val dump = readBcd(context, image, entry, onLog) ?: return "没读到 Boot\\BCD"
+        if (scan(dump.bytes).isEmpty()) return "BCD 是二进制设备项，请改用「对齐磁盘签名」"
+        if (dump.segments.isEmpty()) return "工具没给出 BCD 的物理位置，无法就地改写"
+        val (patched, notes) = rewrite(dump.bytes, targetVolume)
+
+        var written = 0
+        for (seg in dump.segments) {
+            val from = seg.fileOffset.toInt()
+            val to = (seg.fileOffset + seg.length).toInt().coerceAtMost(patched.size)
+            if (from < 0 || from >= patched.size || to <= from) continue
+            var dirty = false
+            for (i in from until to) {
+                if (patched[i] != dump.bytes[i]) {
+                    dirty = true
+                    break
+                }
             }
-            RandomAccessFile(raw, "rw").use { it.setLength(entry.sizeBytes) }
-            val bytes = readViaTool(context, raw, onLog) ?: return "没读到 Boot\\BCD"
-            if (scan(bytes).isEmpty()) return "BCD 是二进制设备项，请改用「对齐磁盘签名」"
-            val (patched, notes) = rewrite(bytes, targetVolume)
-            val tmp = File(AppPaths.tmp, "bcd-patched-${System.currentTimeMillis()}.bin")
-            tmp.writeBytes(patched)
-            try {
-                val put = ToolRunner.run(
-                    context, NativeTools.NTFS_APPLY,
-                    listOf(raw.absolutePath, "--put", tmp.absolutePath, "Boot/BCD"),
-                    onLine = onLog,
-                )
-                if (!put.success) return "写回失败：${put.lines.lastOrNull().orEmpty()}"
-            } finally {
-                tmp.delete()
-            }
-            onLog("回写窗口内的变化簇")
-            val written = EditOps.writeBackRange(image, entry.startByte, windowBytes, raw, null)
-            return "BCD 卷号已改为 Volume$targetVolume（${notes.joinToString("；")}），变化 ${written.changedClusters} 个簇"
-        } catch (t: Throwable) {
-            return "修复失败：${t.message}"
-        } finally {
-            raw.delete()
+            if (!dirty) continue
+            val slice = patched.copyOfRange(from, to)
+            val ok = runCatching {
+                Qcow2Image.open(image, writable = true).use { img ->
+                    img.write(entry.startByte + seg.diskOffset, slice)
+                    img.flush()
+                }
+                true
+            }.getOrDefault(false)
+            if (!ok) return "写回失败（分区偏移 ${seg.diskOffset}）"
+            written++
+        }
+        return if (written == 0) {
+            "BCD 卷号本来就是 Volume$targetVolume，无需修改"
+        } else {
+            "BCD 卷号已就地改为 Volume$targetVolume（${notes.joinToString("；")}），" +
+                "改写 $written 段、共 ${Fmt.size(patched.size.toLong())} 中的变化字节。"
         }
     }
 }

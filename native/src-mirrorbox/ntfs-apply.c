@@ -1,5 +1,5 @@
 /*
- * mirrorbox-ntfs-apply - 把一棵目录树写进 NTFS 镜像文件（不挂载、单进程，libntfs-3g）。
+ * mirrorbox-ntfs - NTFS 目录树写入 / 单文件读取（不挂载、单进程，libntfs-3g）。
  *
  * 为什么需要它：
  *   Android 上普通应用不能挂载 FUSE，所以 wimlib 无法"直接释放到 NTFS 卷"；而 ntfsprogs 的
@@ -7,10 +7,20 @@
  *   libntfs-3g 的库 API 在一个进程里完成：建目录、建文件、写数据、设时间戳。
  *
  * 用法：
- *   mirrorbox-ntfs-apply <ntfs-image> <source-dir> [--label-from-source]
+ *   mirrorbox-ntfs <ntfs-image> <source-dir> [--quiet]        把目录树写进卷
+ *   mirrorbox-ntfs <ntfs-image> [--regions <file>] --dump <guest-path> <host-file>
+ *   mirrorbox-ntfs <ntfs-image> [--regions <file>] --put <host-file> <guest-path>
  *
- * 输出（stderr，供 App 解析进度）：
- *   PROGRESS files=<n> bytes=<n>
+ * --regions <file>：按需区域模式（只读）。文件每行 "off len"（十进制字节），表示调用方
+ *   保证镜像文件里这些范围与真实卷内容一致；范围之外的数据不可信（稀疏空洞）。工具只会读
+ *   这些区域，越界的读取会被记下来，退出时用 `NEED off len` 汇报并以退出码 10 结束；调用方
+ *   补齐后重跑即可。这样即使卷的元数据散布在整个卷里（mkntfs 就把 $MFTMirr/$LogFile 放在卷
+ *   中部、$UpCase/$Bitmap/$AttrDef 放在 1/8 处），也只提取真正需要的那一两百 KB。
+ *
+ * 输出（stdout/stderr 都可能，App 侧按前缀解析）：
+ *   MAP <file-offset> <disk-offset> <len>   被读文件数据的物理位置（用于就地改写）
+ *   NEED <off> <len>                        还需要调用方补齐的区域
+ *   PROGRESS files=<n> bytes=<n>            （目录树写入进度）
  *   DONE files=<n> bytes=<n> failures=<n>
  *
  * 许可：GPL-3.0（与 MirrorBox 一致），链接 GPL 的 libntfs-3g。
@@ -21,11 +31,14 @@
 #include <string.h>
 #include <errno.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
+#include <ntfs-3g/device.h>
 #include <ntfs-3g/volume.h>
 #include <ntfs-3g/dir.h>
 #include <ntfs-3g/attrib.h>
@@ -41,6 +54,284 @@ static int failures = 0;
 static int quiet = 0;
 
 #define BUF_SIZE (1u << 20)
+
+/* ------------------------------------------------------------------ 按需区域（window）模式 */
+
+#define MAX_RANGES 8192
+#define DEV_STATE_OPEN 1 /* ND_Open 位：自定义 device 已由我们打开 */
+
+struct mb_range {
+	s64 off;
+	s64 len;
+};
+
+static struct mb_range have[MAX_RANGES];
+static int have_n = 0;
+static struct mb_range need[MAX_RANGES];
+static int need_n = 0;
+static s64 need_total = 0;
+static int regions_on = 0; /* 未给 --regions 时整卷可用（目录树写入模式） */
+static int dev_fd = -1;
+
+static int have_covers(s64 off, s64 len)
+{
+	int i;
+	if (len <= 0)
+		return 1;
+	for (i = 0; i < have_n; i++)
+		if (off >= have[i].off && off + len <= have[i].off + have[i].len)
+			return 1;
+	return 0;
+}
+
+/* 包含 off 的那段已覆盖区域的结尾；off 未被覆盖时返回 off。 */
+static s64 have_run_end(s64 off)
+{
+	int i;
+	for (i = 0; i < have_n; i++)
+		if (off >= have[i].off && off < have[i].off + have[i].len)
+			return have[i].off + have[i].len;
+	return off;
+}
+
+/* off 之后最近的一段已覆盖区域的起点；都没有则返回 S64_MAX。 */
+static s64 have_next_start(s64 off)
+{
+	s64 best = (s64)1 << 62;
+	int i;
+	for (i = 0; i < have_n; i++)
+		if (have[i].off > off && have[i].off < best)
+			best = have[i].off;
+	return best;
+}
+
+static void need_add(s64 off, s64 len)
+{
+	s64 end = off + len;
+	int i;
+
+	if (len <= 0)
+		return;
+	off &= ~(s64)4095;
+	end = (end + 4095) & ~(s64)4095;
+	if (have_covers(off, end - off))
+		return; /* 已经给过了：避免死循环 */
+	for (i = 0; i < need_n; i++) {
+		s64 a = need[i].off;
+		s64 b = need[i].off + need[i].len;
+		if (off <= b && end >= a) {
+			if (off < a)
+				need[i].off = off;
+			if (end > b)
+				need[i].len = end - need[i].off;
+			return;
+		}
+	}
+	if (need_n < MAX_RANGES) {
+		need[need_n].off = off;
+		need[need_n].len = end - off;
+		need_total += end - off;
+		need_n++;
+	}
+}
+
+static void load_regions(const char *path)
+{
+	char line[256];
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		fprintf(stderr, "WARN regions file %s unreadable: %s\n", path, strerror(errno));
+		return;
+	}
+	while (fgets(line, sizeof(line), f)) {
+		long long a = 0, b = 0;
+		if (sscanf(line, "%lld %lld", &a, &b) == 2 && b > 0 && have_n < MAX_RANGES) {
+			have[have_n].off = (s64)a;
+			have[have_n].len = (s64)b;
+			have_n++;
+		}
+	}
+	fclose(f);
+	regions_on = 1;
+}
+
+/* 调试用：MB_DEBUG=1 时打印阶段性断点（排查卡死）。 */
+#define DBG(...) do { if (getenv("MB_DEBUG")) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
+
+/* 调试用：MB_TRACE=<file> 时记录每一次读取（排查卡死/死循环）。 */
+static FILE *tracef = NULL;
+static void trace_read(s64 off, s64 count)
+{
+	if (!tracef) {
+		const char *p = getenv("MB_TRACE");
+		if (!p)
+			return;
+		tracef = fopen(p, "w");
+		if (!tracef)
+			return;
+	}
+	fprintf(tracef, "%lld %lld\n", (long long)off, (long long)count);
+	fflush(tracef);
+}
+
+/* 混合读：已覆盖的段落真读，未覆盖的段落记 NEED 并补 0（这样一轮能多收集一些请求）。 */
+static s64 dev_read_at(void *buf, s64 count, s64 off)
+{
+	s64 done = 0;
+
+	trace_read(off, count);
+	if (count <= 0)
+		return 0;
+	if (!regions_on)
+		return pread(dev_fd, buf, (size_t)count, off);
+	while (done < count) {
+		s64 cur = off + done;
+		if (have_covers(cur, 1)) {
+			s64 end = have_run_end(cur);
+			s64 take = end - cur;
+			if (take > count - done)
+				take = count - done;
+			if (pread(dev_fd, (char *)buf + done, (size_t)take, cur) != take)
+				return done > 0 ? done : -1;
+			done += take;
+		} else {
+			s64 end = have_next_start(cur);
+			s64 take = end - cur;
+			if (take > count - done)
+				take = count - done;
+			need_add(cur, take);
+			memset((char *)buf + done, 0, (size_t)take);
+			done += take;
+		}
+	}
+	return done;
+}
+
+static int dev_open(struct ntfs_device *dev, int flags)
+{
+	(void)dev;
+	(void)flags;
+	return 0;
+}
+
+static int dev_close(struct ntfs_device *dev)
+{
+	(void)dev;
+	return 0;
+}
+
+static s64 dev_seek(struct ntfs_device *dev, s64 offset, int whence)
+{
+	(void)dev;
+	return lseek(dev_fd, offset, whence);
+}
+
+static s64 dev_read(struct ntfs_device *dev, void *buf, s64 count)
+{
+	(void)dev;
+	s64 pos = lseek(dev_fd, 0, SEEK_CUR);
+	if (pos < 0)
+		return -1;
+	return dev_read_at(buf, count, pos);
+}
+
+static s64 dev_write(struct ntfs_device *dev, const void *buf, s64 count)
+{
+	(void)dev;
+	return write(dev_fd, buf, (size_t)count);
+}
+
+static s64 dev_pread(struct ntfs_device *dev, void *buf, s64 count, s64 offset)
+{
+	(void)dev;
+	return dev_read_at(buf, count, offset);
+}
+
+static s64 dev_pwrite(struct ntfs_device *dev, const void *buf, s64 count, s64 offset)
+{
+	(void)dev;
+	if (regions_on && !have_covers(offset, count)) {
+		/* 只读模式下不该发生；真要写就先要求调用方补齐 */
+		need_add(offset, count);
+		return count;
+	}
+	return pwrite(dev_fd, buf, (size_t)count, offset);
+}
+
+static int dev_sync(struct ntfs_device *dev)
+{
+	(void)dev;
+	return fsync(dev_fd);
+}
+
+static int dev_stat(struct ntfs_device *dev, struct stat *buf)
+{
+	(void)dev;
+	return fstat(dev_fd, buf);
+}
+
+static int dev_ioctl(struct ntfs_device *dev, unsigned long request, void *argp)
+{
+	(void)dev;
+	(void)request;
+	(void)argp;
+	return -1;
+}
+
+static struct ntfs_device_operations DEV_OPS = {
+	.open = dev_open,
+	.close = dev_close,
+	.seek = dev_seek,
+	.read = dev_read,
+	.write = dev_write,
+	.pread = dev_pread,
+	.pwrite = dev_pwrite,
+	.sync = dev_sync,
+	.stat = dev_stat,
+	.ioctl = dev_ioctl,
+};
+
+/* 只读挂载（依次尝试几种 flag 组合，尽量容忍脏卷/休眠卷）。 */
+static ntfs_volume *mount_volume(const char *image)
+{
+	static const unsigned long CAND[] = {
+		NTFS_MNT_RDONLY | NTFS_MNT_IGNORE_HIBERFILE,
+		NTFS_MNT_RDONLY | NTFS_MNT_IGNORE_HIBERFILE | NTFS_MNT_FORENSIC,
+		NTFS_MNT_RDONLY | NTFS_MNT_IGNORE_HIBERFILE | 0x2 /* NTFS_MNT_FORCE */,
+		NTFS_MNT_IGNORE_HIBERFILE | 0x2,
+		0,
+	};
+	size_t i;
+	struct ntfs_device *dev;
+	ntfs_volume *v;
+
+	/* 非区域模式：保持原来的 stdio 路径（目录树写入需要读写挂载） */
+	if (!regions_on) {
+		v = ntfs_mount(image, 0);
+		if (!v)
+			fprintf(stderr, "ERR mount %s: %s\n", image, strerror(errno));
+		return v;
+	}
+
+	dev = ntfs_device_alloc(image, DEV_STATE_OPEN, &DEV_OPS, NULL);
+	if (!dev) {
+		fprintf(stderr, "ERR device-alloc: %s\n", strerror(errno));
+		return NULL;
+	}
+	for (i = 0; i < sizeof(CAND) / sizeof(CAND[0]); i++) {
+		errno = 0;
+		v = ntfs_device_mount(dev, CAND[i]);
+		if (v) {
+			if (i > 0)
+				fprintf(stderr, "mount flags=0x%lx ok\n", CAND[i]);
+			return v;
+		}
+	}
+	fprintf(stderr, "ERR mount %s: %s\n", image, strerror(errno));
+	return NULL;
+}
+
+/* ------------------------------------------------------------------ 名称编码 / 时间戳 */
 
 static int name_to_ucs(const char *name, ntfschar **ucs, u8 *len)
 {
@@ -71,6 +362,8 @@ static void set_times(ntfs_inode *ni, const char *path)
 	times[3] = t;	/* last access */
 	(void)ntfs_inode_set_times(ni, (const char *)times, sizeof(times), 0);
 }
+
+/* ------------------------------------------------------------------ 目录树写入 */
 
 static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path)
 {
@@ -145,41 +438,184 @@ static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path
 	ntfs_inode_close(ni);
 	return bad ? -1 : 0;
 }
-/* ------------------------------------------------------------------ 单文件读写（BCD 用） */
 
-/* 从根开始逐段解析路径（大小写不敏感，/ 与 \ 都接受）。 */
-static ntfs_inode *resolve_path(const char *path)
+static int walk(ntfs_inode *dir_ni, const char *src)
 {
-	char buf[1024];
-	snprintf(buf, sizeof(buf), "%s", path);
+	DIR *d = opendir(src);
+	if (!d) {
+		fprintf(stderr, "ERR opendir %s: %s\n", src, strerror(errno));
+		failures++;
+		return -1;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+			continue;
 
-	ntfs_inode *cur = ntfs_pathname_to_inode(vol, NULL, "/");
-	if (!cur)
-		return NULL;
-
-	char *save = NULL;
-	char *part = strtok_r(buf, "/\\", &save);
-	while (part) {
-		if (!*part || !strcmp(part, ".")) {
-			part = strtok_r(NULL, "/\\", &save);
+		char path[4096];
+		if (snprintf(path, sizeof(path), "%s/%s", src, e->d_name) >= (int)sizeof(path)) {
+			fprintf(stderr, "ERR path-too-long %s/%s\n", src, e->d_name);
+			failures++;
 			continue;
 		}
-		u64 inum = ntfs_inode_lookup_by_mbsname(cur, part);
-		if (!inum) {
-			ntfs_inode_close(cur);
-			errno = ENOENT;
-			return NULL;
+
+		struct stat st;
+		if (lstat(path, &st) != 0)
+			continue;
+
+		if (S_ISDIR(st.st_mode)) {
+			ntfschar *ucs = NULL;
+			u8 ulen = 0;
+			if (name_to_ucs(e->d_name, &ucs, &ulen) != 0) {
+				failures++;
+				continue;
+			}
+			ntfs_inode *sub = ntfs_create(dir_ni, 0, ucs, ulen, S_IFDIR);
+			free(ucs);
+			if (!sub) {
+				fprintf(stderr, "ERR mkdir %s: %s\n", path, strerror(errno));
+				failures++;
+				continue;
+			}
+			walk(sub, path);
+			set_times(sub, path);
+			ntfs_inode_close(sub);
+		} else if (S_ISREG(st.st_mode)) {
+			write_one_file(dir_ni, e->d_name, path);
 		}
-		ntfs_inode *next = ntfs_inode_open(vol, inum);
-		ntfs_inode_close(cur);
-		if (!next) {
-			errno = EIO;
-			return NULL;
-		}
-		cur = next;
-		part = strtok_r(NULL, "/\\", &save);
+		/* 符号链接/设备节点：Windows 镜像里基本用不到，直接跳过 */
 	}
-	return cur;
+	closedir(d);
+	return 0;
+}
+
+/* ------------------------------------------------------------------ 单文件读写（BCD 用） */
+
+/* 解析 guest 路径（`/`、`\` 都接受；大小写不敏感由兜底尝试覆盖）。 */
+static ntfs_inode *resolve_path(const char *path)
+{
+	char norm[1100];
+	size_t i;
+	ntfs_inode *ni;
+
+	for (i = 0; path[i] && i < sizeof(norm) - 2; i++)
+		norm[i] = (path[i] == '\\') ? '/' : path[i];
+	norm[i] = 0;
+	if (norm[0] != '/') {
+		memmove(norm + 1, norm, i + 1);
+		norm[0] = '/';
+	}
+	DBG("  resolve: %s\n", norm);
+	ni = ntfs_pathname_to_inode(vol, NULL, norm);
+	if (ni)
+		return ni;
+	/* 兜底：整体转小写再试一次（ntfs_pathname_to_inode 大小写敏感） */
+	for (i = 0; norm[i]; i++) {
+		if (norm[i] >= 'A' && norm[i] <= 'Z')
+			norm[i] = (char)(norm[i] + 32);
+		else if (norm[i] >= 'a' && norm[i] <= 'z')
+			norm[i] = (char)(norm[i] - 32);
+	}
+	DBG("  resolve(retry): %s\n", norm);
+	ni = ntfs_pathname_to_inode(vol, NULL, norm);
+	if (!ni)
+		errno = ENOENT;
+	return ni;
+}
+
+/*
+ * 打印被读文件数据的物理位置（卷内偏移），供调用方就地改写：
+ *   MAP <file-offset> <disk-offset> <len>
+ * 常驻数据（小文件，存在 MFT 记录里）映射到该记录内部的字节位置。
+ */
+static s64 mft_record_disk_offset(u64 mft_no)
+{
+	s64 cs = (s64)vol->cluster_size;
+	s64 byte = (s64)mft_no * (s64)vol->mft_record_size;
+	ntfs_attr *mna;
+	LCN lcn;
+	s64 res;
+
+	if (!vol->mft_ni || cs <= 0)
+		return -1;
+	mna = ntfs_attr_open(vol->mft_ni, AT_DATA, AT_UNNAMED, 0);
+	if (!mna)
+		return -1;
+	if (ntfs_attr_map_whole_runlist(mna) != 0) {
+		ntfs_attr_close(mna);
+		return -1;
+	}
+	lcn = ntfs_attr_vcn_to_lcn(mna, (VCN)(byte / cs));
+	if (lcn < 0) {
+		ntfs_attr_close(mna);
+		return -1;
+	}
+	res = (s64)lcn * cs + (byte % cs);
+	ntfs_attr_close(mna);
+	return res;
+}
+
+static void print_map(ntfs_attr *na, const char *guest)
+{
+	s64 cs = (s64)vol->cluster_size;
+	s64 total = na->data_size;
+	int i;
+
+	if (!NAttrNonResident(na)) {
+		/* 常驻：数据在 MFT 记录内部。手工遍历属性找 $DATA 的 value_offset。 */
+		u8 *m = (u8 *)na->ni->mrec;
+		u16 ao;
+		int found = 0;
+		s64 disk = mft_record_disk_offset(na->ni->mft_no);
+		if (!m || disk < 0) {
+			printf("MAP-RESIDENT-NO-OFFSET %s\n", guest);
+			return;
+		}
+		memcpy(&ao, m + 0x14, 2);
+		while ((u32)(ao + 24) <= vol->mft_record_size) {
+			u32 type, alen;
+			u8 nonres, namelen;
+			memcpy(&type, m + ao, 4);
+			memcpy(&alen, m + ao + 4, 4);
+			nonres = m[ao + 8];
+			namelen = m[ao + 9];
+			if (type == 0xffffffff || alen < 24)
+				break;
+			if (type == 0x80 && !nonres && namelen == 0) {
+				u32 vlen;
+				u16 voff;
+				memcpy(&vlen, m + ao + 0x10, 4);
+				memcpy(&voff, m + ao + 0x14, 2);
+				printf("MAP 0 %lld %lld\n", (long long)(disk + voff),
+				       (long long)vlen);
+				found = 1;
+				break;
+			}
+			ao = (u16)(ao + alen);
+		}
+		if (!found)
+			printf("MAP-RESIDENT-NOTFOUND %s\n", guest);
+		return;
+	}
+
+	if (!na->rl) {
+		printf("MAP-NO-RUNLIST %s\n", guest);
+		return;
+	}
+	for (i = 0; i < 500000 && na->rl[i].lcn != LCN_ENOENT; i++) {
+		s64 fo = (s64)na->rl[i].vcn * cs;
+		s64 flen = (s64)na->rl[i].length * cs;
+		if (na->rl[i].lcn < 0)
+			continue; /* 空洞：读出来是 0，不需要回写 */
+		if (fo >= total)
+			break;
+		if (fo + flen > total)
+			flen = total - fo;
+		if (flen <= 0)
+			continue;
+		printf("MAP %lld %lld %lld\n", (long long)fo,
+		       (long long)na->rl[i].lcn * cs, (long long)flen);
+	}
 }
 
 /* 把 guest 文件读出来写到 host 文件。 */
@@ -196,6 +632,7 @@ static int mode_dump(const char *guest, const char *host)
 		ntfs_inode_close(ni);
 		return 5;
 	}
+	(void)ntfs_attr_map_whole_runlist(na);
 	FILE *out = fopen(host, "wb");
 	if (!out) {
 		fprintf(stderr, "ERR create %s: %s\n", host, strerror(errno));
@@ -222,6 +659,7 @@ static int mode_dump(const char *guest, const char *host)
 	}
 	free(buf);
 	fclose(out);
+	print_map(na, guest);
 	ntfs_attr_close(na);
 	ntfs_inode_close(ni);
 	fprintf(stderr, "DUMP %s -> %s (%lld bytes)\n", guest, host, (long long)off);
@@ -304,185 +742,7 @@ static int mode_put(const char *host, const char *guest)
 	return rc;
 }
 
-/* 在内存里把 UTF-16LE 的 \Device\HarddiskVolumeN 改成 target。 */
-static int patch_bcd_bytes(char *data, size_t size, int target, char *report, size_t report_size)
-{
-	static const char PREFIX[] = "\\Device\\HarddiskVolume";
-	const size_t plen = sizeof(PREFIX) - 1;
-	int changed = 0;
-	size_t i = 0;
-
-	while (i + plen * 2 + 2 <= size) {
-		size_t j = 0;
-		int match = 1;
-		for (j = 0; j < plen; j++) {
-			if ((unsigned char)data[i + j * 2] != (unsigned char)PREFIX[j] ||
-			    data[i + j * 2 + 1] != 0) {
-				match = 0;
-				break;
-			}
-		}
-		if (!match) {
-			i += 2;
-			continue;
-		}
-		size_t k = i + plen * 2;
-		int digits = 0;
-		int volume = 0;
-		while (k + 1 < size && data[k + 1] == 0 && data[k] >= '0' && data[k] <= '9') {
-			volume = volume * 10 + (data[k] - '0');
-			digits++;
-			k += 2;
-		}
-		if (digits == 0) {
-			i += 2;
-			continue;
-		}
-		char rep[16];
-		int rlen = snprintf(rep, sizeof(rep), "%d", target);
-		size_t pos = i + plen * 2;
-		for (j = 0; j < (size_t)rlen && pos + 1 < size; j++) {
-			data[pos] = rep[j];
-			data[pos + 1] = 0;
-			pos += 2;
-		}
-		while (pos < i + plen * 2 + (size_t)digits * 2) {
-			data[pos] = 0;
-			data[pos + 1] = 0;
-			pos += 2;
-		}
-		if (!changed)
-			snprintf(report, report_size, "%s%d -> %s%d", PREFIX, volume, PREFIX, target);
-		else
-			snprintf(report + strlen(report), report_size - strlen(report),
-				 ", %s%d -> %s%d", PREFIX, volume, PREFIX, target);
-		changed++;
-		i = pos;
-	}
-	return changed;
-}
-
-/* 一步到位：读出 \Boot\BCD → 改卷号 → 写回。 */
-static int mode_fix_bcd(int target)
-{
-	static const char *candidates[] = { "\\Boot\\BCD", "Boot\\BCD", "/Boot/BCD", "Boot/BCD" };
-	ntfs_inode *ni = NULL;
-	const char *used = NULL;
-	for (size_t c = 0; c < sizeof(candidates) / sizeof(candidates[0]) && !ni; c++) {
-		ni = resolve_path(candidates[c]);
-		if (ni)
-			used = candidates[c];
-	}
-	if (!ni) {
-		fprintf(stderr, "ERR no \\Boot\\BCD in this volume\n");
-		return 7;
-	}
-
-	ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
-	if (!na) {
-		ntfs_inode_close(ni);
-		return 7;
-	}
-
-	s64 size = na->data_size;
-	if (size <= 0 || size > (s64)(64 << 20)) {
-		fprintf(stderr, "ERR BCD size looks wrong (%lld)\n", (long long)size);
-		ntfs_attr_close(na);
-		ntfs_inode_close(ni);
-		return 7;
-	}
-
-	char *data = malloc((size_t)size);
-	s64 got = 0;
-	while (got < size) {
-		s64 r = ntfs_attr_pread(na, got, size - got, data + got);
-		if (r <= 0)
-			break;
-		got += r;
-	}
-	if (got != size) {
-		fprintf(stderr, "ERR short read (%lld/%lld)\n", (long long)got, (long long)size);
-		free(data);
-		ntfs_attr_close(na);
-		ntfs_inode_close(ni);
-		return 7;
-	}
-
-	char report[512] = { 0 };
-	int changed = patch_bcd_bytes(data, (size_t)size, target, report, sizeof(report));
-	if (changed == 0) {
-		fprintf(stderr, "NO-STRINGS %s (%lld bytes): BCD uses binary device elements\n",
-			used, (long long)size);
-		free(data);
-		ntfs_attr_close(na);
-		ntfs_inode_close(ni);
-		return 8;
-	}
-
-	if (ntfs_attr_pwrite(na, 0, size, data) != size) {
-		fprintf(stderr, "ERR write-back failed\n");
-		free(data);
-		ntfs_attr_close(na);
-		ntfs_inode_close(ni);
-		return 7;
-	}
-
-	free(data);
-	ntfs_attr_close(na);
-	ntfs_inode_close(ni);
-	fprintf(stderr, "FIXED %s: %s (%d refs)\n", used, report, changed);
-	return 0;
-}
-
-static int walk(ntfs_inode *dir_ni, const char *src)
-{
-	DIR *d = opendir(src);
-	if (!d) {
-		fprintf(stderr, "ERR opendir %s: %s\n", src, strerror(errno));
-		failures++;
-		return -1;
-	}
-	struct dirent *e;
-	while ((e = readdir(d)) != NULL) {
-		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
-			continue;
-
-		char path[4096];
-		if (snprintf(path, sizeof(path), "%s/%s", src, e->d_name) >= (int)sizeof(path)) {
-			fprintf(stderr, "ERR path-too-long %s/%s\n", src, e->d_name);
-			failures++;
-			continue;
-		}
-
-		struct stat st;
-		if (lstat(path, &st) != 0)
-			continue;
-
-		if (S_ISDIR(st.st_mode)) {
-			ntfschar *ucs = NULL;
-			u8 ulen = 0;
-			if (name_to_ucs(e->d_name, &ucs, &ulen) != 0) {
-				failures++;
-				continue;
-			}
-			ntfs_inode *sub = ntfs_create(dir_ni, 0, ucs, ulen, S_IFDIR);
-			free(ucs);
-			if (!sub) {
-				fprintf(stderr, "ERR mkdir %s: %s\n", path, strerror(errno));
-				failures++;
-				continue;
-			}
-			walk(sub, path);
-			set_times(sub, path);
-			ntfs_inode_close(sub);
-		} else if (S_ISREG(st.st_mode)) {
-			write_one_file(dir_ni, e->d_name, path);
-		}
-		/* 符号链接/设备节点：Windows 镜像里基本用不到，直接跳过 */
-	}
-	closedir(d);
-	return 0;
-}
+/* ------------------------------------------------------------------ main */
 
 int main(int argc, char **argv)
 {
@@ -491,12 +751,15 @@ int main(int argc, char **argv)
 	const char *mode = NULL;
 	const char *arg_a = NULL;
 	const char *arg_b = NULL;
-	int volume = 0;
+	const char *regions = NULL;
 	int i;
+	int rc = 0;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--quiet")) {
 			quiet = 1;
+		} else if (!strcmp(argv[i], "--regions") && i + 1 < argc) {
+			regions = argv[++i];
 		} else if (!strcmp(argv[i], "--dump") && i + 2 < argc) {
 			mode = "dump";
 			arg_a = argv[++i];
@@ -505,9 +768,6 @@ int main(int argc, char **argv)
 			mode = "put";
 			arg_a = argv[++i];
 			arg_b = argv[++i];
-		} else if (!strcmp(argv[i], "--fix-bcd") && i + 1 < argc) {
-			mode = "fixbcd";
-			volume = atoi(argv[++i]);
 		} else if (!image) {
 			image = argv[i];
 		} else if (!source) {
@@ -518,40 +778,42 @@ int main(int argc, char **argv)
 	if (!image || (!source && !mode)) {
 		fprintf(stderr,
 			"usage: %s <ntfs-image> <source-dir> [--quiet]\n"
-			"       %s <ntfs-image> --dump <guest-path> <host-file>\n"
-			"       %s <ntfs-image> --put <host-file> <guest-path>\n"
-			"       %s <ntfs-image> --fix-bcd <volume-number>\n",
-			argv[0], argv[0], argv[0], argv[0]);
+			"       %s <ntfs-image> [--regions <file>] --dump <guest-path> <host-file>\n"
+			"       %s <ntfs-image> [--regions <file>] --put <host-file> <guest-path>\n",
+			argv[0], argv[0], argv[0]);
 		return 2;
 	}
 
-	vol = ntfs_mount(image, 0);
-	if (!vol) {
-		fprintf(stderr, "ERR mount %s: %s\n", image, strerror(errno));
+	if (regions)
+		load_regions(regions);
+
+	dev_fd = open(image, O_RDWR);
+	if (dev_fd < 0) {
+		fprintf(stderr, "ERR open %s: %s\n", image, strerror(errno));
 		return 3;
 	}
 
-	int rc = 0;
+	vol = mount_volume(image);
+	if (!vol) {
+		rc = 3;
+		goto done;
+	}
+
 	if (mode) {
 		if (!strcmp(mode, "dump"))
 			rc = mode_dump(arg_a, arg_b);
-		else if (!strcmp(mode, "put"))
-			rc = mode_put(arg_a, arg_b);
 		else
-			rc = mode_fix_bcd(volume);
-		if (ntfs_umount(vol, FALSE) != 0) {
-			fprintf(stderr, "ERR umount\n");
-			if (rc == 0)
-				rc = 1;
-		}
-		return rc;
+			rc = mode_put(arg_a, arg_b);
+		ntfs_umount(vol, FALSE);
+		goto done;
 	}
 
 	ntfs_inode *root = ntfs_pathname_to_inode(vol, NULL, "/");
 	if (!root) {
 		fprintf(stderr, "ERR root-inode\n");
 		ntfs_umount(vol, FALSE);
-		return 4;
+		rc = 4;
+		goto done;
 	}
 
 	walk(root, source);
@@ -565,5 +827,18 @@ int main(int argc, char **argv)
 
 	fprintf(stderr, "DONE files=%lld bytes=%lld failures=%d\n",
 		files_written, bytes_written, failures);
-	return failures ? 1 : 0;
+	rc = failures ? 1 : 0;
+
+done:
+	/* 区域模式：把还没拿到的区域报告给调用方，让它补齐后重跑 */
+	if (regions_on && need_n > 0) {
+		fprintf(stderr, "MISSING %d region(s), %.2f MB not in window\n",
+			need_n, need_total / 1048576.0);
+		for (i = 0; i < need_n; i++)
+			printf("NEED %lld %lld\n", (long long)need[i].off, (long long)need[i].len);
+		rc = 10;
+	}
+	if (dev_fd >= 0)
+		close(dev_fd);
+	return rc;
 }

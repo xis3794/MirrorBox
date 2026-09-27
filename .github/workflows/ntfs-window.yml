@@ -1,0 +1,33 @@
+name: NTFS Window Protocol
+
+# 验证 mirrorbox-ntfs 的「按需区域」协议：读一个几十 GB 的 NTFS 分区里的 \Boot\BCD 时，
+# 只把工具真正需要的几十~几百 KB 元数据补进稀疏窗口，而不是提取整个分区。
+# 这个测试必须在 x86_64 主机上跑（本机 Android 上跑一次 2G 镜像会把设备拖死）。
+
+on:
+  push:
+    paths:
+      - 'native/src-mirrorbox/**'
+      - 'native/scripts/test-ntfs-window.sh'
+      - '.github/workflows/ntfs-window.yml'
+  pull_request:
+    paths:
+      - 'native/src-mirrorbox/**'
+      - 'native/scripts/test-ntfs-window.sh'
+      - '.github/workflows/ntfs-window.yml'
+  workflow_dispatch:
+
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ntfs-3g ntfs-3g-dev gcc python3
+
+      - name: Run按需区域协议测试
+        run: bash native/scripts/test-ntfs-window.sh "${RUNNER_TEMP}/mb-ntfs-window"

@@ -394,7 +394,9 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "读取只提取分区开头 64 MiB（不够自动放大），不会占用与分区等大的空间。",
+                            "读取方式：NTFS 的元数据散在整个卷里（$MFTMirr 在卷中部、$UpCase 在 1/8 处），" +
+                                "所以用「按需索取」——只把工具真正需要的几百 KB 元数据补进一个稀疏窗口，" +
+                                "不占与分区等大的临时空间。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

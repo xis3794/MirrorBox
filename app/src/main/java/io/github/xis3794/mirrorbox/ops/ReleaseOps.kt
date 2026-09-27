@@ -99,20 +99,18 @@ object ReleaseOps {
                     onLog("BCD 检查：镜像里没有 Boot\\BCD（Win7 的 install.wim 有时不含，需要 Win7 安装盘跑「启动修复」/ bcdboot）")
                 } else {
                     onLog("BCD 检查：${report.summary}")
+                    // 0xC000000E 的正解：把 BCD 里的「分区设备」结构改成指向本分区
+                    //（原机器是 分区偏移 32256/LBA63 + 它自己的磁盘签名，我们两者都不同）。
+                    var sig = BcdFix.currentSignature(image)
+                    if (sig == 0L) {
+                        // 全新磁盘还没有磁盘签名：给一个固定的，保证 MBR 与 BCD 一致
+                        sig = 0x4D425844L // "MBXD"
+                        PartitionOps.setDiskSignature(image, sig)
+                        onLog("磁盘签名为 0，已生成 " + String.format("0x%08X", sig))
+                    }
+                    onLog("BCD 设备结构：${BcdFix.fixDevicesInStaging(staging, entry.startByte, sig)}")
                     onLog("BCD 卷号处理：${BcdFix.fixInStaging(staging, entry.index)}")
-                    val sigs = report.signatures
-                    if (sigs.isNotEmpty()) {
-                        val target = sigs.first().expected
-                        val before = BcdFix.currentSignature(image)
-                        if (PartitionOps.setDiskSignature(image, target)) {
-                            onLog(
-                                "磁盘签名已对齐到 BCD 期望值：" +
-                                    String.format("0x%08X → 0x%08X", before, target) + "（只改 MBR 4 字节）",
-                            )
-                        } else {
-                            onLog("磁盘签名写入失败")
-                        }
-                    } else if (report.volumeRefs.isEmpty()) {
+                    if (report.devices.isEmpty() && report.volumeRefs.isEmpty()) {
                         onLog("BCD 里没识别到设备项：请用「导出 BCD」把文件发我，或改用 Win7 安装盘的「启动修复」")
                     }
                 }

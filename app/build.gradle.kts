@@ -13,8 +13,8 @@ android {
         applicationId = "io.github.xis3794.mirrorbox"
         minSdk = 24
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.1.14"
+        versionCode = 15
+        versionName = "0.1.15"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

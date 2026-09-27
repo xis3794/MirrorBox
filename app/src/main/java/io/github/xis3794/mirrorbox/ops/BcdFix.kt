@@ -56,6 +56,79 @@ object BcdFix {
 
     data class Found(val offset: Int, val text: String, val volume: Int)
 
+    /** BCD 里的「分区设备」结构：bootmgr 用它找系统分区。 */
+    data class DeviceStruct(
+        val fileOffset: Int,
+        val expectedOffset: Long,
+        val expectedSignature: Long,
+    )
+
+    /** Windows 分区设备结构（88 字节）里的字段偏移。 */
+    private const val DEV_KIND = 0x10          // u32 = 6（分区）
+    private const val DEV_SIZE = 0x18          // u32 = 0x48（结构长度 72）
+    private const val DEV_OFFSET = 0x20        // u64 = 分区字节偏移
+    private const val DEV_FLAG = 0x34          // u32 ≤ 4
+    private const val DEV_SIGNATURE = 0x38     // u32 = 磁盘签名
+
+    /**
+     * 扫描 BCD 里所有的分区设备结构。
+     *
+     * 实测（Win7 从 install.wim 释放的镜像）：7 处结构，全部是
+     * `分区偏移=32256（LBA 63）`，签名则是原机器的 `0xE488E488`（个别对象是 `0xA05EA05E`）。
+     * 我们的盘如果分区不在 LBA 63、MBR 签名也不是它，bootmgr 就会 0xC000000E。
+     */
+    fun findDeviceStructs(bytes: ByteArray): List<DeviceStruct> {
+        fun u32(at: Int): Int {
+            var v = 0
+            for (i in 3 downTo 0) v = (v shl 8) or (bytes[at + i].toInt() and 0xff)
+            return v
+        }
+        fun u64(at: Int): Long {
+            var v = 0L
+            for (i in 7 downTo 0) v = (v shl 8) or (bytes[at + i].toLong() and 0xff)
+            return v
+        }
+        val out = ArrayList<DeviceStruct>()
+        var p = 0
+        while (p + 0x40 <= bytes.size) {
+            // 结构前面 16 字节是 0；紧跟着 kind=6、size=0x48，尾部是 0
+            var zeros = true
+            for (i in 0 until 16) {
+                if (bytes[p + i].toInt() != 0) {
+                    zeros = false
+                    break
+                }
+            }
+            if (zeros && u32(p + DEV_KIND) == 6 && u32(p + DEV_SIZE) == 0x48 &&
+                u32(p + 0x3C) == 0 && u32(p + DEV_FLAG) <= 4
+            ) {
+                val off = u64(p + DEV_OFFSET)
+                val sig = u32(p + DEV_SIGNATURE).toLong() and 0xffffffffL
+                if (off > 0 && off % 512L == 0L && off < (1L shl 42) && sig != 0L && sig != 0xffffffffL) {
+                    out.add(DeviceStruct(p, off, sig))
+                }
+            }
+            p++
+        }
+        return out
+    }
+
+    /** 把所有分区设备结构改成指向 (offset, signature)；返回新字节与原结构列表。 */
+    fun patchDeviceStructs(
+        bytes: ByteArray,
+        offset: Long,
+        signature: Long,
+    ): Pair<ByteArray, List<DeviceStruct>> {
+        val structs = findDeviceStructs(bytes)
+        if (structs.isEmpty()) return bytes to emptyList()
+        val out = bytes.copyOf()
+        for (s in structs) {
+            for (i in 0 until 8) out[s.fileOffset + DEV_OFFSET + i] = ((offset shr (8 * i)) and 0xff).toByte()
+            for (i in 0 until 4) out[s.fileOffset + DEV_SIGNATURE + i] = ((signature shr (8 * i)) and 0xff).toByte()
+        }
+        return out to structs
+    }
+
     data class Signature(val foundAt: Int, val expected: Long, val offsetMatched: String)
 
     /** 文件内偏移 → 卷内物理偏移（就地改写用）。 */
@@ -76,6 +149,7 @@ object BcdFix {
         val currentDiskSignature: Long,
         val hexPreview: String,
         val summary: String,
+        val devices: List<DeviceStruct> = emptyList(),
     )
 
     fun utf16le(text: String): ByteArray = text.toByteArray(UTF16)
@@ -229,13 +303,15 @@ object BcdFix {
         val bytes = runCatching { bcd.readBytes() }.getOrNull() ?: return null
         val refs = scan(bytes)
         val sigs = candidateSignatures(bytes, partitionStartBytes, partitionStartSectors)
+        val devices = findDeviceStructs(bytes)
         return Report(
             sizeBytes = bytes.size.toLong(),
             volumeRefs = refs,
             signatures = sigs,
             currentDiskSignature = -1,
             hexPreview = hexPreview(bytes),
-            summary = describe(refs, sigs),
+            summary = describeDevices(devices, partitionStartBytes, 0L) + "；" + describe(refs, sigs),
+            devices = devices,
         )
     }
 
@@ -442,14 +518,40 @@ object BcdFix {
             )
         val refs = scan(dump.bytes)
         val sigs = candidateSignatures(dump.bytes, entry.startByte, entry.startLba)
+        val devices = findDeviceStructs(dump.bytes)
         return Report(
             sizeBytes = dump.bytes.size.toLong(),
             volumeRefs = refs,
             signatures = sigs,
             currentDiskSignature = current,
             hexPreview = hexPreview(dump.bytes),
-            summary = describe(refs, sigs) + "；本磁盘签名 " + String.format("0x%08X", current),
+            summary = describeDevices(devices, entry.startByte, current) + "；" + describe(refs, sigs),
+            devices = devices,
         )
+    }
+
+    /** 设备结构的可读摘要：BCD 期望什么 vs 本盘实际是什么。 */
+    fun describeDevices(devices: List<DeviceStruct>, partitionStart: Long, diskSignature: Long): String {
+        if (devices.isEmpty()) {
+            return "BCD 里没找到「分区设备」结构（可能是文本卷号形式，或格式特殊）"
+        }
+        val wantOffsets = devices.map { it.expectedOffset }.distinct()
+        val wantSigs = devices.map { it.expectedSignature }.distinct()
+        val sameOffset = wantOffsets.size == 1 && wantOffsets.first() == partitionStart
+        val sameSig = diskSignature != 0L && wantSigs.size == 1 && wantSigs.first() == diskSignature
+        return buildString {
+            append("分区设备结构 ${devices.size} 处：期望偏移 ")
+            append(wantOffsets.joinToString("、") { "$it（LBA ${it / 512}）" })
+            append("，期望磁盘签名 ")
+            append(wantSigs.joinToString("、") { String.format("0x%08X", it) })
+            append("；本分区偏移 $partitionStart（LBA ${partitionStart / 512}），本磁盘签名 ")
+            append(String.format("0x%08X", diskSignature))
+            if (!sameOffset || !sameSig) {
+                append(" → 不一致，这就是 0xC000000E 的原因，点「修复 BCD（指向本分区）」")
+            } else {
+                append(" → 已一致")
+            }
+        }
     }
 
     /** 导出 BCD 到可访问目录（便于发给我分析）。 */
@@ -468,54 +570,22 @@ object BcdFix {
         }.getOrElse { "导出失败：${it.message}" }
     }
 
-    /** **签名对齐**：读出 BCD 期望的磁盘签名，写进 MBR（只改 4 字节）。 */
-    suspend fun alignDiskSignature(
-        context: Context,
+    /** 把 [patched] 里相对 [original] 有变化的段落写回卷里的物理位置（按 MAP）。 */
+    private fun writeBackChanged(
         image: File,
         entry: PartitionEntry,
-        onLog: (String) -> Unit = {},
-    ): String {
-        val report = analyzeInPartition(context, image, entry, onLog)
-        val candidates = report.signatures.map { it.expected }.distinct()
-        if (candidates.isEmpty()) {
-            return "BCD 里没找到与本分区偏移匹配的二进制设备项 → 请点「导出 BCD」，把文件发我做精确修复"
-        }
-        val target = candidates.first()
-        val old = String.format("0x%08X", report.currentDiskSignature)
-        val ok = PartitionOps.setDiskSignature(image, target)
-        return if (ok) {
-            "已把磁盘签名对齐到 BCD 期望值：$old → " + String.format("0x%08X", target) +
-                "（只改了 MBR 的 4 字节）。重启试引导。"
-        } else {
-            "写入磁盘签名失败"
-        }
-    }
-
-    /**
-     * 文本卷号形式的就地修复：读出 BCD → 改卷号 → **只把变化的字节写回它在卷里的物理位置**。
-     *
-     * 因为长度不变，不需要动 NTFS 的任何元数据（也不需要可写挂载）。
-     */
-    suspend fun fixVolumeInPartition(
-        context: Context,
-        image: File,
-        entry: PartitionEntry,
-        targetVolume: Int,
-        onLog: (String) -> Unit = {},
-    ): String {
-        val dump = readBcd(context, image, entry, onLog) ?: return "没读到 Boot\\BCD"
-        if (scan(dump.bytes).isEmpty()) return "BCD 是二进制设备项，请改用「对齐磁盘签名」"
-        if (dump.segments.isEmpty()) return "工具没给出 BCD 的物理位置，无法就地改写"
-        val (patched, notes) = rewrite(dump.bytes, targetVolume)
-
+        original: ByteArray,
+        patched: ByteArray,
+        segments: List<MapSegment>,
+    ): Int {
         var written = 0
-        for (seg in dump.segments) {
+        for (seg in segments) {
             val from = seg.fileOffset.toInt()
-            val to = (seg.fileOffset + seg.length).toInt().coerceAtMost(patched.size)
-            if (from < 0 || from >= patched.size || to <= from) continue
+            val to = (seg.fileOffset + seg.length).toInt().coerceAtMost(minOf(patched.size, original.size))
+            if (from < 0 || from >= to) continue
             var dirty = false
             for (i in from until to) {
-                if (patched[i] != dump.bytes[i]) {
+                if (patched[i] != original[i]) {
                     dirty = true
                     break
                 }
@@ -529,14 +599,105 @@ object BcdFix {
                 }
                 true
             }.getOrDefault(false)
-            if (!ok) return "写回失败（分区偏移 ${seg.diskOffset}）"
+            if (!ok) return -written - 1
             written++
         }
+        return written
+    }
+
+    /** **签名对齐**：把 MBR 磁盘签名改成 BCD 期望的值（只改 4 字节）。 */
+    suspend fun alignDiskSignature(
+        context: Context,
+        image: File,
+        entry: PartitionEntry,
+        onLog: (String) -> Unit = {},
+    ): String {
+        val report = analyzeInPartition(context, image, entry, onLog)
+        val fromDevices = report.devices.map { it.expectedSignature }.distinct()
+        val candidates = if (fromDevices.isNotEmpty()) fromDevices else report.signatures.map { it.expected }.distinct()
+        if (candidates.isEmpty()) {
+            return "BCD 里没找到期望的磁盘签名 → 请点「导出 BCD」，把文件发我做精确修复"
+        }
+        if (candidates.size > 1) {
+            return "BCD 里有多个不同签名（${candidates.joinToString("、") { String.format("0x%08X", it) }}），" +
+                "请改用「修复 BCD（指向本分区）」"
+        }
+        val target = candidates.first()
+        val old = String.format("0x%08X", report.currentDiskSignature)
+        val ok = PartitionOps.setDiskSignature(image, target)
+        return if (ok) {
+            "已把磁盘签名对齐到 BCD 期望值：$old → " + String.format("0x%08X", target) +
+                "（只改了 MBR 的 4 字节）。注意：BCD 期望的分区偏移是 " +
+                report.devices.map { it.expectedOffset }.distinct().joinToString("、") +
+                "，若与本分区偏移 ${entry.startByte} 不同，仍然起不来 —— 那就用「修复 BCD（指向本分区）」。"
+        } else {
+            "写入磁盘签名失败"
+        }
+    }
+
+    /**
+     * **修复 BCD（推荐）**：把 BCD 里所有「分区设备」结构改成指向**本分区**
+     *（分区字节偏移 + 本磁盘签名），就地写回。
+     *
+     * 这是 0xC000000E 的正解：Win7 的 BCD 里存的是**原机器**的
+     * `(分区偏移 32256 / LBA63, 磁盘签名 0xE488E488)`，我们的盘两者都不一样，
+     * 所以只把 MBR 签名改一致还不够 —— 分区偏移也要跟着改。
+     */
+    suspend fun fixDevicesInPartition(
+        context: Context,
+        image: File,
+        entry: PartitionEntry,
+        onLog: (String) -> Unit = {},
+    ): String {
+        val dump = readBcd(context, image, entry, onLog) ?: return "没读到 Boot\\BCD"
+        if (dump.segments.isEmpty()) return "工具没给出 BCD 的物理位置，无法就地改写"
+        val signature = currentSignature(image)
+        val (patched, structs) = patchDeviceStructs(dump.bytes, entry.startByte, signature)
+        if (structs.isEmpty()) return "BCD 里没有「分区设备」结构（可能是文本卷号形式，用「修复卷号」）"
+        val written = writeBackChanged(image, entry, dump.bytes, patched, dump.segments)
+        if (written < 0) return "写回失败（分区偏移 ${-written - 1}）"
+        val before = structs.map { "${it.expectedOffset}/" + String.format("0x%08X", it.expectedSignature) }.distinct()
+        return "BCD 已指向本分区：${structs.size} 处分区设备结构 " +
+            "${before.joinToString("、")} → ${entry.startByte}（LBA ${entry.startLba}）/" +
+            String.format("0x%08X", signature) + "；写回 $written 段。重启试引导。"
+    }
+
+    /**
+     * 释放流程用：直接改**staging 里的 BCD 文件**（普通文件，最省事），
+     * 这样写进分区的 BCD 一开始就是对的。
+     */
+    fun fixDevicesInStaging(staging: File, partitionStart: Long, signature: Long): String {
+        val bcd = bcdFile(staging) ?: return "镜像里没有 Boot\\BCD"
+        val bytes = runCatching { bcd.readBytes() }.getOrNull() ?: return "读不到 ${bcd.absolutePath}"
+        val (patched, structs) = patchDeviceStructs(bytes, partitionStart, signature)
+        if (structs.isEmpty()) return "BCD 里没有「分区设备」结构（不需要改）"
+        val ok = runCatching { bcd.writeBytes(patched); true }.getOrDefault(false)
+        if (!ok) return "写入 BCD 失败"
+        val before = structs.map { "${it.expectedOffset}/" + String.format("0x%08X", it.expectedSignature) }.distinct()
+        return "BCD 设备结构已指向本分区：${structs.size} 处 ${before.joinToString("、")} → " +
+            "$partitionStart（LBA ${partitionStart / 512}）/" + String.format("0x%08X", signature)
+    }
+
+    /**
+     * 文本卷号形式的就地修复：读出 BCD → 改卷号 → **只把变化的字节写回它在卷里的物理位置**。
+     */
+    suspend fun fixVolumeInPartition(
+        context: Context,
+        image: File,
+        entry: PartitionEntry,
+        targetVolume: Int,
+        onLog: (String) -> Unit = {},
+    ): String {
+        val dump = readBcd(context, image, entry, onLog) ?: return "没读到 Boot\\BCD"
+        if (scan(dump.bytes).isEmpty()) return "BCD 用的是二进制设备项，请用「修复 BCD（指向本分区）」"
+        if (dump.segments.isEmpty()) return "工具没给出 BCD 的物理位置，无法就地改写"
+        val (patched, notes) = rewrite(dump.bytes, targetVolume)
+        val written = writeBackChanged(image, entry, dump.bytes, patched, dump.segments)
+        if (written < 0) return "写回失败（分区偏移 ${-written - 1}）"
         return if (written == 0) {
             "BCD 卷号本来就是 Volume$targetVolume，无需修改"
         } else {
-            "BCD 卷号已就地改为 Volume$targetVolume（${notes.joinToString("；")}），" +
-                "改写 $written 段、共 ${Fmt.size(patched.size.toLong())} 中的变化字节。"
+            "BCD 卷号已就地改为 Volume$targetVolume（${notes.joinToString("；")}），写回 $written 段。"
         }
     }
 }

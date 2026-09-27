@@ -386,9 +386,9 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Windows 0xC000000E（引导选择失败，设备不可访问）：Win7 的 BCD 通常把系统分区存成" +
-                                "「原磁盘签名 + 分区偏移」的二进制设备项，照搬到别的盘后签名不匹配就会这样。" +
-                                "首选「对齐磁盘签名」（只改 MBR 4 字节）；BCD 若用文本卷号则用「修复卷号」。",
+                            "Windows 0xC000000E（引导选择失败，设备不可访问）：Win7 的 BCD 里存的是**原机器**的" +
+                                "「分区偏移 + 磁盘签名」（例：偏移 32256/LBA63、签名 0xE488E488）。我们的盘两者都不同，" +
+                                "所以只对齐签名还不够 —— 用「修复 BCD（指向本分区）」一次改好，重启即可。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -432,7 +432,28 @@ fun WimReleaseScreen(nav: Navigator, imagePath: String?) {
                                     }
                                 }
                             }
-                            GlassButton("对齐磁盘签名（推荐）", enabled = !busy) {
+                            GlassButton("修复 BCD（指向本分区，推荐）", enabled = !busy) {
+                                val entryRef = targetEntry
+                                val imgRef = image
+                                if (entryRef == null || imgRef == null) {
+                                    status = "请先选择目标分区"
+                                } else {
+                                    scope.launch {
+                                        busy = true
+                                        log = emptyList()
+                                        status = "正在把 BCD 的分区设备结构改成指向本分区 …"
+                                        val result = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                BcdFix.fixDevicesInPartition(context, imgRef, entryRef, onLog = { append(it) })
+                                            }.getOrElse { "修复失败：${it.message}" }
+                                        }
+                                        status = result
+                                        android.widget.Toast.makeText(context, result.take(120), android.widget.Toast.LENGTH_LONG).show()
+                                        busy = false
+                                    }
+                                }
+                            }
+                            GlassButton("对齐磁盘签名", enabled = !busy) {
                                 val entryRef = targetEntry
                                 val imgRef = image
                                 if (entryRef == null || imgRef == null) {

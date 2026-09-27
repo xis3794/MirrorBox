@@ -126,16 +126,18 @@ for fo, doff, ln in maps:
     if img.read(ln) != src[fo:fo + ln]:
         raise SystemExit('MAP 位置不正确: file_off=%d disk_off=%d len=%d' % (fo, doff, ln))
 print('MAP 校验通过：%d 段' % len(maps))
-# 模拟 App 的就地改写：把 \Device\HarddiskVolume1 改成 Volume2
+# 模拟 App 的就地改写：把 \Device\HarddiskVolume1 改成 Volume2（只改数字那一个字节）
 needle = '\\Device\\HarddiskVolume'.encode('utf-16-le')
 i = src.find(needle)
 assert i >= 0, '找不到设备项'
-target = [d for fo, d, ln in maps if fo <= i < fo + ln]
-assert target, '设备项不在任何 MAP 段里'
+pos = i + len(needle)   # 数字 '1' 的位置
+seg = next(((fo, doff, ln) for fo, doff, ln in maps if fo <= pos < fo + ln), None)
+assert seg, '设备项不在任何 MAP 段里'
+fo, doff, ln = seg
 with open(work + '/full.img', 'r+b') as f:
-    f.seek(target[0] + (i - fo))
+    f.seek(doff + (pos - fo))
     f.write(b'2')
-print('已就地改写 disk_off=%d' % (target[0] + (i - fo)))
+print('已就地改写 disk_off=%d（file_off=%d）' % (doff + (pos - fo), pos))
 PY
 
 log "6) 用完整镜像确认就地改写生效"

@@ -104,7 +104,9 @@ object BcdFix {
             ) {
                 val off = u64(p + DEV_OFFSET)
                 val sig = u32(p + DEV_SIGNATURE).toLong() and 0xffffffffL
-                if (off > 0 && off % 512L == 0L && off < (1L shl 42) && sig != 0L && sig != 0xffffffffL) {
+                // 签名允许为 0：Windows 首次开机可能把它写成 0（MBR 签名为 0 时），
+                // 我们仍要认出来并改成真实签名，否则会一直 0xC000000E。
+                if (off > 0 && off % 512L == 0L && off < (1L shl 42) && sig != 0xffffffffL) {
                     out.add(DeviceStruct(p, off, sig))
                 }
             }
@@ -651,15 +653,25 @@ object BcdFix {
     ): String {
         val dump = readBcd(context, image, entry, onLog) ?: return "没读到 Boot\\BCD"
         if (dump.segments.isEmpty()) return "工具没给出 BCD 的物理位置，无法就地改写"
+        val hadSignature = currentSignature(image)
+        if (hadSignature == 0L && !PartitionOps.setDiskSignature(image, GrubBoot.DEFAULT_DISK_SIGNATURE)) {
+            return "写入磁盘签名失败"
+        }
         val signature = currentSignature(image)
         val (patched, structs) = patchDeviceStructs(dump.bytes, entry.startByte, signature)
         if (structs.isEmpty()) return "BCD 里没有「分区设备」结构（可能是文本卷号形式，用「修复卷号」）"
         val written = writeBackChanged(image, entry, dump.bytes, patched, dump.segments)
         if (written < 0) return "写回失败（分区偏移 ${-written - 1}）"
         val before = structs.map { "${it.expectedOffset}/" + String.format("0x%08X", it.expectedSignature) }.distinct()
+        val extra = if (hadSignature == 0L) {
+            "（原 MBR 磁盘签名是 0，已生成 " + String.format("0x%08X", signature) +
+                "—— 否则 Windows 开机时会自己分配一个，BCD 又会对不上）"
+        } else {
+            ""
+        }
         return "BCD 已指向本分区：${structs.size} 处分区设备结构 " +
             "${before.joinToString("、")} → ${entry.startByte}（LBA ${entry.startLba}）/" +
-            String.format("0x%08X", signature) + "；写回 $written 段。重启试引导。"
+            String.format("0x%08X", signature) + "；写回 $written 段。$extra 重启试引导。"
     }
 
     /**

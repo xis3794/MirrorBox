@@ -201,26 +201,7 @@ def device_mode(path):
         +0x38 u32 = 磁盘签名
     """
     d = open(path, "rb").read()
-    hits = []
-    for p in range(0, len(d) - 0x40):
-        if d[p:p + 16] != b"\x00" * 16:          # 结构前面 16 字节是 0
-            continue
-        if struct.unpack_from("<I", d, p + 0x10)[0] != 6:   # 设备类（6 = 分区）
-            continue
-        if struct.unpack_from("<I", d, p + 0x18)[0] != 0x48:  # 结构长度 72
-            continue
-        off = struct.unpack_from("<Q", d, p + 0x20)[0]
-        if off == 0 or off % 512 or off > (1 << 42):
-            continue
-        flag = struct.unpack_from("<I", d, p + 0x34)[0]
-        if flag > 4:
-            continue
-        sig = struct.unpack_from("<I", d, p + 0x38)[0]
-        if sig == 0 or sig == 0xFFFFFFFF:
-            continue
-        if struct.unpack_from("<I", d, p + 0x3C)[0] != 0:
-            continue
-        hits.append((p, off, sig, flag))
+    hits = find_device_structs(d)
 
     print(f"== 候选 device 元素：{len(hits)} 个 ==")
     sigs, offs = set(), set()
@@ -232,6 +213,7 @@ def device_mode(path):
 
 
 def find_device_structs(d):
+    """找出所有 BCD 分区设备结构（88 字节）。签名允许为 0：Windows 首次开机可能就写成 0。"""
     hits = []
     for p in range(0, len(d) - 0x40):
         if d[p:p + 16] != b"\x00" * 16:
@@ -247,7 +229,7 @@ def find_device_structs(d):
         if flag > 4:
             continue
         sig = struct.unpack_from("<I", d, p + 0x38)[0]
-        if sig == 0 or sig == 0xFFFFFFFF:
+        if sig == 0xFFFFFFFF:
             continue
         if struct.unpack_from("<I", d, p + 0x3C)[0] != 0:
             continue

@@ -29,6 +29,24 @@ object GrubBoot {
     const val MBR_CODE_BYTES = 446
     const val CORE_LBA = 1L
 
+    /** MBR 里没有磁盘签名时用的固定值（Windows 发现签名是 0 会自己分配一个新的，把 BCD 甩掉）。 */
+    const val DEFAULT_DISK_SIGNATURE = 0x4D425844L
+
+    /** 读 MBR bytes440..443 的磁盘签名。 */
+    fun readDiskSignature(mbr: ByteArray): Long =
+        (mbr[440].toLong() and 0xff) or
+            ((mbr[441].toLong() and 0xff) shl 8) or
+            ((mbr[442].toLong() and 0xff) shl 16) or
+            ((mbr[443].toLong() and 0xff) shl 24)
+
+    /** 写 MBR bytes440..443 的磁盘签名。 */
+    fun writeDiskSignature(mbr: ByteArray, signature: Long) {
+        mbr[440] = (signature and 0xff).toByte()
+        mbr[441] = ((signature shr 8) and 0xff).toByte()
+        mbr[442] = ((signature shr 16) and 0xff).toByte()
+        mbr[443] = ((signature shr 24) and 0xff).toByte()
+    }
+
     /** 我们的布局里第一个分区从 LBA 2048 开始，core.img 必须落在它前面。 */
     const val MIN_PARTITION_START_LBA = 2048L
 
@@ -71,7 +89,17 @@ object GrubBoot {
 
         Qcow2Image.open(image, writable = true).use { img ->
             val mbr = img.readBytes(0L, 512)
+            /*
+             * 坑：GRUB 的 boot.img 是 446 字节的引导代码，**它把 MBR bytes440..443 也一起
+             * 覆盖成 0**，而那 4 个字节是「磁盘签名」。
+             * Windows 开机发现签名为 0 会自己分配一个新的写回 MBR，于是 BCD 里记的旧值
+             * 就再也对不上 —— 现象正是「第一次能开机，重启后就坏」。
+             * 所以：装 GRUB 前先保存原签名，装完立刻写回去（原来是 0 就生成一个非 0 的）。
+             */
+            val previous = readDiskSignature(mbr)
             System.arraycopy(boot, 0, mbr, 0, MBR_CODE_BYTES)
+            val signature = if (previous != 0L) previous else DEFAULT_DISK_SIGNATURE
+            writeDiskSignature(mbr, signature)
             mbr[510] = 0x55
             mbr[511] = 0xAA.toByte()
             if (setFirstActive) {

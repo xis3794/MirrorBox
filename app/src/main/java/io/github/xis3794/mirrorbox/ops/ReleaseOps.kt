@@ -103,8 +103,10 @@ object ReleaseOps {
                     //（原机器是 分区偏移 32256/LBA63 + 它自己的磁盘签名，我们两者都不同）。
                     var sig = BcdFix.currentSignature(image)
                     if (sig == 0L) {
-                        // 全新磁盘还没有磁盘签名：给一个固定的，保证 MBR 与 BCD 一致
-                        sig = 0x4D425844L // "MBXD"
+                        // 全新磁盘还没有磁盘签名：必须给一个固定值。
+                        // 签名为 0 时 Windows 首次开机会自己分配一个新的并写回 MBR，
+                        // 之后 BCD 里的旧签名又对不上（现象：第一次能开机，重启就坏）。
+                        sig = GrubBoot.DEFAULT_DISK_SIGNATURE
                         PartitionOps.setDiskSignature(image, sig)
                         onLog("磁盘签名为 0，已生成 " + String.format("0x%08X", sig))
                     }

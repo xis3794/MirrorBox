@@ -36,6 +36,8 @@ class BcdDeviceStructTest {
         // 两处真实结构
         deviceStruct(32256, 0xE488E488L).copyInto(b, 0x200)
         deviceStruct(32256, 0xA05EA05EL).copyInto(b, 0x400)
+        // 签名 0 也要能认出来（Windows 首次开机后 MBR 签名为 0 时的真实状态）
+        deviceStruct(1048576, 0L).copyInto(b, 0x500)
         // 噪声：kind 不对、偏移不对齐、签名是 0xFFFFFFFF，都不该被认出来
         deviceStruct(32256, 0xE488E488L, kind = 7).copyInto(b, 0x600)
         deviceStruct(32257, 0xE488E488L).copyInto(b, 0x700)
@@ -46,18 +48,18 @@ class BcdDeviceStructTest {
     @Test
     fun `只认出真正的分区设备结构`() {
         val found = BcdFix.findDeviceStructs(sampleBcd())
-        assertEquals(2, found.size)
-        assertEquals(listOf(0x200, 0x400), found.map { it.fileOffset })
-        assertTrue(found.all { it.expectedOffset == 32256L })
-        assertEquals(listOf(0xE488E488L, 0xA05EA05EL), found.map { it.expectedSignature })
+        assertEquals(3, found.size)
+        assertEquals(listOf(0x200, 0x400, 0x500), found.map { it.fileOffset })
+        assertTrue(found.all { it.expectedOffset == 32256L || it.expectedOffset == 1048576L })
+        assertEquals(listOf(0xE488E488L, 0xA05EA05EL, 0L), found.map { it.expectedSignature })
     }
 
     @Test
     fun `改写后指向本分区并可复检`() {
         val (patched, structs) = BcdFix.patchDeviceStructs(sampleBcd(), 1048576L, 0xDEADBEEFL)
-        assertEquals(2, structs.size)
+        assertEquals(3, structs.size)
         val after = BcdFix.findDeviceStructs(patched)
-        assertEquals(2, after.size)
+        assertEquals(3, after.size)
         assertTrue(after.all { it.expectedOffset == 1048576L })
         assertTrue(after.all { it.expectedSignature == 0xDEADBEEFL })
         // 噪声区域不应该被改写

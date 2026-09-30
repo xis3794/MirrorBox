@@ -75,7 +75,24 @@ grep -q 'copied instead' app_fb.log || { tail -10 app_fb.log; die "日志里没�
 grep -q 'Permission denied' app_fb.log && log "   （回退日志里带上了真实 errno ✓）"
 
 log "6) 回退复制出来的内容必须与源一致"
-cmp tree/dir_a/payload.bin dst_fb/dir_b/payload.bin || die "回退复制的内容不一致"
-cmp tree/dir_a/payload.bin dst_fb/dir_a/payload.bin || die "第一个别名的内容也不对"
+dump() {
+  echo "--- $1 ---"
+  ls -l "$1" 2>&1 || true
+  od -c "$1" 2>/dev/null | head -3 || true
+}
+if ! cmp tree/dir_a/payload.bin dst_fb/dir_b/payload.bin; then
+  dump tree/dir_a/payload.bin
+  dump dst_fb/dir_b/payload.bin
+  dump dst_fb/dir_a/payload.bin
+  tail -20 app_fb.log
+  die "回退复制的内容不一致"
+fi
+if ! cmp tree/dir_a/payload.bin dst_fb/dir_a/payload.bin; then
+  dump tree/dir_a/payload.bin
+  dump dst_fb/dir_a/payload.bin
+  dump dst_fb/dir_b/payload.bin
+  tail -20 app_fb.log
+  die "第一个别名的内容也不对"
+fi
 
 log "全部通过 ✓"

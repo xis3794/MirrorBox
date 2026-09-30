@@ -1,6 +1,8 @@
 package io.github.xis3794.mirrorbox.ops
 
 import android.content.Context
+import android.system.Os
+import android.system.OsConstants
 import io.github.xis3794.mirrorbox.core.NativeTools
 import io.github.xis3794.mirrorbox.core.ToolResult
 import io.github.xis3794.mirrorbox.core.ToolRunner
@@ -126,7 +128,14 @@ object WimOps {
     /**
      * 把 [index] 释放到 [dest] 目录（不挂载）。
      *
-     * `--no-acls`：Android 的文件系统没有 Windows 安全描述符的概念，跳过它既省时间又避免报错。
+     * - `--no-acls`：Android 的文件系统没有 Windows 安全描述符的概念，跳过它既省时间又避免报错。
+     * - `--no-attributes`：**必须**。Windows 镜像里不少目录带「只读」属性，wimlib 会把它们建成
+     *   `0555`（不可写），而 winsxs 里有大量硬链接要建到这些目录里（典型：`Windows\Boot\PCAT\bootmgr`
+     *   ← `Windows\winsxs\x86_..._bootmanager-pcat_...\bootmgr`），于是 `link()` 直接 `EACCES`，
+     *   wimlib 以退出码 35 中止 —— 表现就是「换了个 WIM 就释放失败」。这些属性对我们毫无用处
+     *   （后面写进 NTFS 用的是自己的写入器，本来就不处理 DOS 属性），所以直接跳过。
+     *
+     * 万一还有别的 WIM 触发同类错误，再把暂存目录权限放开重试一次。
      */
     suspend fun apply(
         context: Context,
@@ -136,12 +145,47 @@ object WimOps {
         onLine: (String) -> Unit = {},
     ): ToolResult {
         dest.mkdirs()
-        return ToolRunner.run(
-            context,
-            NativeTools.WIMLIB,
-            listOf("apply", wim.absolutePath, index.toString(), dest.absolutePath, "--no-acls"),
-            onLine = onLine,
+        // 上一次可能失败在中途，留下了一批 0555 的目录（wimlib 建的），
+        // 那样这次连"往里写文件"都会被拒 —— 先统一放开权限。
+        if (dest.listFiles()?.isNotEmpty() == true) relaxPermissions(dest)
+        val args = listOf(
+            "apply", wim.absolutePath, index.toString(), dest.absolutePath,
+            "--no-acls", "--no-attributes",
         )
+        val first = ToolRunner.run(context, NativeTools.WIMLIB, args, timeoutMs = 0L, onLine = onLine)
+        if (first.success) return first
+        val linkProblem = first.lines.any {
+            it.contains("hard link", ignoreCase = true) || it.contains("symbolic link", ignoreCase = true)
+        }
+        if (!linkProblem) return first
+        onLine("创建链接被拒（暂存目录里有只读目录）：放开权限后重试一次…")
+        relaxPermissions(dest)
+        return ToolRunner.run(context, NativeTools.WIMLIB, args, timeoutMs = 0L, onLine = onLine)
+    }
+
+    /**
+     * 递归把暂存目录里的目录改成 `0755`、文件改成 `0644`（不跟随符号链接）。
+     * 用于「wimlib 因为只读目录建链接失败」后的兜底重试。
+     */
+    private fun relaxPermissions(root: File) {
+        val stack = ArrayDeque<File>()
+        stack.add(root)
+        var guard = 0
+        while (stack.isNotEmpty() && guard++ < 400_000) {
+            val f = stack.removeLast()
+            val st = runCatching { Os.lstat(f.absolutePath) }.getOrNull() ?: continue
+            if (OsConstants.S_ISLNK(st.st_mode)) continue      // 别跟着符号链接跑到树外/成环
+            runCatching {
+                if (OsConstants.S_ISDIR(st.st_mode)) {
+                    Os.chmod(f.absolutePath, 0b111101101)      // 0755
+                } else {
+                    Os.chmod(f.absolutePath, 0b110100100)      // 0644
+                }
+            }
+            if (OsConstants.S_ISDIR(st.st_mode)) {
+                (f.listFiles() ?: emptyArray()).forEach { stack.add(it) }
+            }
+        }
     }
 
     /** 校验 WIM 是否完整（较慢，可选）。 */

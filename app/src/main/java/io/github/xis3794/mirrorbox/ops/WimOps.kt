@@ -158,7 +158,7 @@ object WimOps {
             it.contains("hard link", ignoreCase = true) || it.contains("symbolic link", ignoreCase = true)
         }
         if (!linkProblem) return first
-        onLine("创建链接被拒（暂存目录里有只读目录）：放开权限后重试一次…")
+        onLine("创建链接被拒（部分设备不允许 link()）：放开权限后重试一次…")
         relaxPermissions(dest)
         return ToolRunner.run(context, NativeTools.WIMLIB, args, timeoutMs = 0L, onLine = onLine)
     }

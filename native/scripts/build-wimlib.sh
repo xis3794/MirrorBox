@@ -15,7 +15,11 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 build_wimlib() {
-  if [[ -f "${OUT_DIR}/${ABI}/tools/libwimlib-imagex.so" ]]; then
+  # 缓存戳带上「补丁脚本 + 本脚本」的哈希：改了补丁就必须重编，
+  # 否则 CI 的 native/out 缓存会把旧的 libwimlib-imagex.so 直接搬回来。
+  local src_hash
+  src_hash="$({ cat "${NATIVE_DIR}/scripts/build-wimlib.sh"; cat "${NATIVE_DIR}/scripts/patch-wimlib-link-fallback.py"; } | sha256sum | cut -c1-8)"
+  if [[ -f "${OUT_DIR}/${ABI}/.wimlib-ok-${src_hash}" ]]; then
     log "wimlib already built (cached)"
     return 0
   fi
@@ -257,6 +261,13 @@ mirrorbox_android_lutimes(const char *path, const struct timeval tv[2])
     print('patched src/unix_apply.c: futimes()/lutimes() for bionic (API < 26)')
 PY
 
+  # 释放 Windows 镜像时，winsxs 里同一份数据会以多个名字出现（硬链接）。某些设备/文件系统
+  # **即使在自己的应用数据目录里也会拒绝 link()**（实测华为：EACCES），wimlib 于是以退出码 35
+  # 中止整个释放流程（现象：「换了一份 WIM 就释放失败」）。硬链接对我们的流程并不必需 ——
+  # 暂存目录随后是逐文件写进 NTFS 的 —— 所以补上「link() 失败就复制内容」的回退。
+  # 详见 native/scripts/patch-wimlib-link-fallback.py。
+  python3 "${NATIVE_DIR}/scripts/patch-wimlib-link-fallback.py" "${BUILD_DIR}/wimlib"
+
   # Force the modern timestamp path: in a cross build the AC_CHECK_FUNCS link probe can silently
   # fail, after which wimlib falls back to futimes()/lutimes(). Both futimens() and utimensat() are
   # declared for API 24 and live in libc, so pinning the cache variables is safe and exact.
@@ -269,6 +280,7 @@ PY
 
   # bin_PROGRAMS lives in the top level Makefile.am; libtool leaves the real ELF in .libs/.
   package_tool "wimlib-imagex" "${BUILD_DIR}/wimlib/wimlib-imagex"
+  touch "${OUT_DIR}/${ABI}/.wimlib-ok-${src_hash}"
 
   # wimlib-imagex dispatches on argv[0] (wiminfo, wimapply, wimextract, wimdir …). The app calls it
   # with explicit subcommands, so one binary is enough — advertise that clearly in the log.

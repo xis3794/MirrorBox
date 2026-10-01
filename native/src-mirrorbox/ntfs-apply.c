@@ -50,6 +50,8 @@
 static ntfs_volume *vol = NULL;
 static long long files_written = 0;
 static long long bytes_written = 0;
+static long long links_expanded = 0; /* 符号链接 → 展开成普通文件的个数 */
+static long long links_skipped = 0;  /* 指向目录的链接（junction）：跳过 */
 static int failures = 0;
 static int quiet = 0;
 
@@ -719,7 +721,27 @@ static int walk(ntfs_inode *dir_ni, const char *src, const char *guest)
 		if (lstat(path, &st) != 0)
 			continue;
 
-		if (S_ISDIR(st.st_mode)) {
+		/*
+		 * 符号链接：Windows 镜像里有两类 ——
+		 *  ① 指向**普通文件**的：wimlib 在 link() 被拒时用符号链接顶替的硬链接别名
+		 *     （典型是 DriverStore\FileRepository\*），**必须展开成真实文件** ——
+		 *     否则 Windows 里那些 .inf/.sys 就是空的（所有设备都装不上驱动）。
+		 *  ② 指向**目录**的 junction（如 "Documents and Settings"）：跳过，
+		 *     Windows 里那只是兼容用的外壳。
+		 */
+		if (S_ISLNK(st.st_mode)) {
+			struct stat tst;
+
+			if (stat(path, &tst) == 0 && S_ISREG(tst.st_mode)) {
+				if (name_is(e->d_name, "desktop.ini"))
+					has_desktop_ini = 1,
+					mb_attr_add(child_guest, MB_ATTR_HIDDEN | MB_ATTR_SYSTEM);
+				write_one_file(dir_ni, e->d_name, path);
+				links_expanded++;
+			} else {
+				links_skipped++;
+			}
+		} else if (S_ISDIR(st.st_mode)) {
 			ntfschar *ucs = NULL;
 			u8 ulen = 0;
 			if (name_to_ucs(e->d_name, &ucs, &ulen) != 0) {
@@ -1168,8 +1190,8 @@ int main(int argc, char **argv)
 	/* 卸载完成后再改磁盘上的 MFT 记录（此时库不会再覆盖我们的写入） */
 	mb_attr_write_raw();
 
-	fprintf(stderr, "DONE files=%lld bytes=%lld failures=%d\n",
-		files_written, bytes_written, failures);
+	fprintf(stderr, "DONE files=%lld bytes=%lld failures=%d links_expanded=%lld links_skipped=%lld\n",
+		files_written, bytes_written, failures, links_expanded, links_skipped);
 	rc = failures ? 1 : 0;
 
 done:

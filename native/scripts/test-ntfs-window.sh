@@ -62,7 +62,9 @@ head -c  300000 /dev/urandom > src/Windows/System32/ntoskrnl.exe
 # 一个很小的"常驻"文件：用来覆盖 MAP 的常驻分支（数据直接存在 MFT 记录里）
 printf 'MIRRORBOX-RESIDENT-DATA' > src/Windows/small.txt
 # desktop.ini：Windows 里是「隐藏+系统」，父目录应带「系统」属性（见 --attrs 检查）
-printf '[.ShellClassInfo]\nLocalizedResourceName=@%%SystemRoot%%\\\\system32\\\\shell32.dll,-21787\n' > src/Windows/desktop.ini
+printf '[.ShellClassInfo]\nLocalizedResourceName=@%%SystemRoot%%\\system32\\shell32.dll,-21787\n' > src/Windows/desktop.ini
+# 指向普通文件的符号链接：wimlib 顶替硬链接的方式，写入器必须把它展开成真实文件
+ln -sfn System32/small.txt src/Windows/alias.txt
 "${TOOL}" "${IMG}" src > apply.log 2>&1 || { tail -5 apply.log; die "目录树写入失败"; }
 log "   $(tail -1 apply.log)"
 
@@ -188,5 +190,11 @@ grep -q 'system' attrs_file.txt || die "desktop.ini 没有 SYSTEM 属性"
 grep -q 'system' attrs_dir.txt || die "含 desktop.ini 的目录没有 SYSTEM 属性"
 "${TOOL}" "${IMG}" --attrs 'Windows/System32/kernel32.dll' | tee attrs_plain.txt
 if grep -q 'hidden' attrs_plain.txt; then die "普通文件不该带 HIDDEN 属性"; fi
+
+log "9) 符号链接必须被展开成真实文件（DriverStore 那种别名就靠这条路）"
+grep -q 'links_expanded=1' apply.log || { tail -3 apply.log; die "写入器没有报告 links_expanded=1"; }
+"${TOOL}" "${IMG}" --dump 'Windows/alias.txt' alias.bin > /dev/null 2>&1 \
+  || die "符号链接别名没有被写进镜像"
+cmp src/Windows/System32/small.txt alias.bin || die "展开后的内容与目标文件不一致"
 
 log "全部通过 ✓（${rounds} 轮，补齐 $(awk -v b="${materialized}" 'BEGIN{printf "%.2f", b/1048576}') MiB）"

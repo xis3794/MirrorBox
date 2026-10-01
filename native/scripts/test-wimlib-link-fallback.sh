@@ -52,7 +52,7 @@ log "4) 正常释放（link() 可用）：必须是真硬链接，证明测试�
 [[ "$(stat -c %i dst_ok/dir_a/payload.bin)" == "$(stat -c %i dst_ok/dir_b/payload.bin)" ]] \
   || die "正常路径下没走硬链接，本测试无法证明回退有效"
 
-log "5) 用 LD_PRELOAD 让 link() 恒返回 EACCES，验证回退"
+log "5) 用 LD_PRELOAD 让 link() 恒返回 EACCES，验证回退（符号链接）"
 cat > nohardlink.c <<'EOF'
 #define _GNU_SOURCE
 #include <errno.h>
@@ -68,31 +68,20 @@ int link(const char *oldpath, const char *newpath)
 EOF
 gcc -shared -fPIC -o libnohardlink.so nohardlink.c
 LD_PRELOAD="$WORK/libnohardlink.so" "$WIM" apply out.wim 1 dst_fb > app_fb.log 2>&1 \
-  || { tail -30 app_fb.log; die "有回退补丁的情况下仍然失败"; }
-grep -q 'copied instead' app_fb.log || { tail -10 app_fb.log; die "日志里没有回退提示（补丁没生效）"; }
-[[ "$(stat -c %i dst_fb/dir_a/payload.bin)" != "$(stat -c %i dst_fb/dir_b/payload.bin)" ]] \
-  || die "回退后仍然是硬链接？"
-grep -q 'Permission denied' app_fb.log && log "   （回退日志里带上了真实 errno ✓）"
-
-log "6) 回退复制出来的内容必须与源一致"
-dump() {
-  echo "--- $1 ---"
-  ls -l "$1" 2>&1 || true
-  od -c "$1" 2>/dev/null | head -3 || true
+  || {
+    grep -q 'Can.t create hard link' app_fb.log || true
+    tail -20 app_fb.log
+    die "link() 被拒时释放失败了"
+  }
+[[ -L dst_fb/dir_b/payload.bin ]] || {
+  tail -20 app_fb.log
+  die "回退后不是符号链接（是不是又退化成复制了？复制会吃掉几个 GB）"
 }
-if ! cmp tree/dir_a/payload.bin dst_fb/dir_b/payload.bin; then
-  dump tree/dir_a/payload.bin
-  dump dst_fb/dir_b/payload.bin
-  dump dst_fb/dir_a/payload.bin
-  tail -20 app_fb.log
-  die "回退复制的内容不一致"
-fi
-if ! cmp tree/dir_a/payload.bin dst_fb/dir_a/payload.bin; then
-  dump tree/dir_a/payload.bin
-  dump dst_fb/dir_a/payload.bin
-  dump dst_fb/dir_b/payload.bin
-  tail -20 app_fb.log
-  die "第一个别名的内容也不对"
-fi
+link_size=$(stat -c %s dst_fb/dir_b/payload.bin)
+log "   别名是符号链接 ✓（只占 ${link_size} 字节；复制的话会占 $(stat -c %s tree/dir_a/payload.bin) 字节）"
+
+log "6) 符号链接指向的内容必须与源一致"
+cmp tree/dir_a/payload.bin dst_fb/dir_b/payload.bin || die "符号链接解析后的内容不一致"
+cmp tree/dir_a/payload.bin dst_fb/dir_a/payload.bin || die "第一个别名的内容也不对"
 
 log "全部通过 ✓"

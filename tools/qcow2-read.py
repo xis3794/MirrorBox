@@ -45,6 +45,9 @@ class Qcow2:
         self.l2_mask = (1 << self.l2_bits) - 1
         self.copies = 0          # 实际读到的字段数（诊断用）
         self.mapped_clusters = 0
+        # 压缩簇解压失败计数（静默补 0 会让上层误判"内容为空"）
+        self.zfail = 0
+        self.zfail_detail = []
         # l1 表里每一项覆盖 (1<<l2_bits) 个簇
         self.l1_bytes = self.l1_size * 8
         self.l2_count_per_l1 = 1 << self.l2_bits
@@ -74,9 +77,16 @@ class Qcow2:
             return None
         if e2 & ZERO_FLAG:
             return None
-        coff = e2 & OFFSET_MASK
         if e2 & COMPRESSED_FLAG:
-            return ("compressed", coff, l2i)
+            # 压缩簇描述符：x = 62 - (cluster_bits - 8)
+            #   bit 0..x-1 : 宿主偏移（通常不对齐）
+            #   bit x..61  : 压缩数据还要额外的多少个 512 字节扇区
+            #   bit 62     : compressed，bit 63 : copied
+            x = 62 - (self.cluster_bits - 8)
+            off = e2 & ((1 << x) - 1)
+            extra = (e2 >> x) & ((1 << (62 - x)) - 1)
+            return ("compressed", off, extra)
+        coff = e2 & OFFSET_MASK
         return ("data", coff + in_cl)
 
     def read(self, off, n):
@@ -92,22 +102,26 @@ class Qcow2:
                 buf = self.f.read(take)
                 out += buf + b"\x00" * (take - len(buf))
             else:
-                _, coff, l2i = m
+                # 压缩簇：deflate **没有 zlib 头**（见 qcow2 规范），必须 raw inflate
+                _, coff, extra = m
+                clen = (extra + 1) * 512
                 self.f.seek(coff)
-                hdr = self.f.read(2)
-                if len(hdr) < 2:
-                    out += b"\x00" * take
-                else:
-                    length = struct.unpack(">H", hdr)[0] & 0x3FFF
-                    sectors = (struct.unpack(">H", hdr)[0] >> 8) + 1  # 仅为记录
-                    raw = self.f.read(pow(2, self.cluster_bits) - 2)
-                    try:
-                        dec = zlib.decompress(raw)
-                    except zlib.error:
-                        dec = b""
+                raw = self.f.read(clen)
+                dec = b""
+                try:
+                    d = zlib.decompressobj(-15)
+                    dec = d.decompress(raw, self.cluster)
                     if len(dec) < self.cluster:
-                        dec += b"\x00" * (self.cluster - len(dec))
-                    out += dec[in_cl:in_cl + take]
+                        dec += d.flush()
+                except zlib.error as exc:
+                    # 不能静默补 0：否则 NTFS 索引块会被读成空洞，导致"文件不存在"的假象
+                    self.zfail += 1
+                    self.zfail_detail.append(
+                        (virtual_off, coff, clen, str(exc)))
+                    dec = b""
+                if len(dec) < self.cluster:
+                    dec += b"\x00" * (self.cluster - len(dec))
+                out += dec[in_cl:in_cl + take]
             off += take
             n -= take
         return bytes(out)
@@ -202,6 +216,11 @@ def main():
                 if any(data):
                     fh.write(data)
                 total += ln
+        if img.zfail:
+            print(f"WARNING: {img.zfail} 个压缩簇解压失败（这些位置被当成 0，"
+                  f"上层可能误判内容为空）", file=sys.stderr)
+            for v, coff, clen, err in img.zfail_detail[:5]:
+                print(f"  虚拟偏移 {v} 宿主 {coff} 长度 {clen}: {err}", file=sys.stderr)
         print(f"写入 {args.out}：{total} 字节（{total / 1048576:.2f} MiB，全 0 段留空洞）")
         return
 

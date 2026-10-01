@@ -244,6 +244,65 @@ static int mode_attrs(const char *guest)
 	return 0;
 }
 
+/* ------------------------------------------------------------------ 列目录（诊断） */
+
+struct ls_ctx {
+	int count;
+};
+
+static int ls_cb(void *dirent, const ntfschar *name, const int name_len,
+		 const int name_type, const s64 pos, const MFT_REF mref,
+		 const unsigned dt_type)
+{
+	struct ls_ctx *c = dirent;
+	char *utf8 = NULL;
+	int n;
+
+	(void)pos;
+	(void)mref;
+	if (name_type != FILE_NAME_POSIX) /* 只看长名（Win32），不列 8.3 */
+		return 0;
+	n = ntfs_ucstombs(name, name_len, &utf8, 0);
+	if (n >= 0 && utf8) {
+		/* 一并打印完整的 MFT 引用（低 48 位是记录号，高 16 位是序列号）： */
+		/* 名字查找在个别卷上不可靠时，可以用 --dump-inode 直接读 */
+		printf("LS %s%s mft=%llu\n", utf8, (dt_type == NTFS_DT_DIR) ? "/" : "",
+		       (unsigned long long)mref);
+		free(utf8);
+		c->count++;
+	}
+	return 0;
+}
+
+/** `--ls <guest-dir>`：列出目录内容（诊断"文件到底在不在"用）。 */
+static int mode_ls(const char *guest)
+{
+	ntfs_inode *ni;
+	s64 pos = 0;
+	struct ls_ctx c;
+	int rc;
+
+	c.count = 0;
+	/* "#123" 表示直接用 MFT 号打开（绕开可能不可靠的名字查找） */
+	if (guest[0] == '#')
+		ni = ntfs_inode_open(vol, (MFT_REF)strtoull(guest + 1, NULL, 0));
+	else
+		ni = resolve_path(guest);
+	if (!ni) {
+		fprintf(stderr, "ERR open %s: %s\n", guest, strerror(errno));
+		return 5;
+	}
+	rc = ntfs_readdir(ni, &pos, &c, ls_cb);
+	if (rc) {
+		fprintf(stderr, "ERR readdir %s: %s\n", guest, strerror(errno));
+		ntfs_inode_close(ni);
+		return 5;
+	}
+	ntfs_inode_close(ni);
+	fprintf(stderr, "LSCOUNT %s %d\n", guest, c.count);
+	return 0;
+}
+
 /* ------------------------------------------------------------------ 按需区域（window）模式 */
 
 #define MAX_RANGES 8192
@@ -873,6 +932,61 @@ static int mode_dump(const char *guest, const char *host)
 	return rc;
 }
 
+/* 按 MFT 号读文件数据（名字查找在个别卷上不可靠时的兜底）。 */
+static int mode_dump_inode(u64 mft_no, const char *host)
+{
+	ntfs_inode *ni = ntfs_inode_open(vol, (MFT_REF)mft_no);
+	ntfs_attr *na;
+	FILE *out;
+	char *buf;
+	s64 size, off = 0;
+	int rc = 0;
+
+	if (!ni) {
+		fprintf(stderr, "ERR inode %llu: %s\n",
+			(unsigned long long)mft_no, strerror(errno));
+		return 5;
+	}
+	na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+	if (!na) {
+		fprintf(stderr, "ERR no-data inode %llu\n", (unsigned long long)mft_no);
+		ntfs_inode_close(ni);
+		return 5;
+	}
+	(void)ntfs_attr_map_whole_runlist(na);
+	out = fopen(host, "wb");
+	if (!out) {
+		fprintf(stderr, "ERR create %s: %s\n", host, strerror(errno));
+		ntfs_attr_close(na);
+		ntfs_inode_close(ni);
+		return 5;
+	}
+	buf = malloc(BUF_SIZE);
+	size = na->data_size;
+	while (off < size) {
+		s64 want = (size - off < (s64)BUF_SIZE) ? (size - off) : (s64)BUF_SIZE;
+		s64 got = ntfs_attr_pread(na, off, want, buf);
+
+		if (got <= 0) {
+			rc = 5;
+			break;
+		}
+		if (fwrite(buf, 1, (size_t)got, out) != (size_t)got) {
+			rc = 5;
+			break;
+		}
+		off += got;
+	}
+	free(buf);
+	fclose(out);
+	print_map(na, host);
+	ntfs_attr_close(na);
+	ntfs_inode_close(ni);
+	fprintf(stderr, "DUMP inode %llu -> %s (%lld bytes)\n",
+		(unsigned long long)mft_no, host, (long long)off);
+	return rc;
+}
+
 /* 把 host 文件写回 guest 文件（存在则覆盖，不存在则创建）。 */
 static int mode_put(const char *host, const char *guest)
 {
@@ -978,6 +1092,13 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "--attrs") && i + 1 < argc) {
 			mode = "attrs";
 			arg_a = argv[++i];
+		} else if (!strcmp(argv[i], "--ls") && i + 1 < argc) {
+			mode = "ls";
+			arg_a = argv[++i];
+		} else if (!strcmp(argv[i], "--dump-inode") && i + 2 < argc) {
+			mode = "dumpinode";
+			arg_a = argv[++i];
+			arg_b = argv[++i];
 		} else if (!image) {
 			image = argv[i];
 		} else if (!source) {
@@ -1015,6 +1136,10 @@ int main(int argc, char **argv)
 			rc = mode_dump(arg_a, arg_b);
 		else if (!strcmp(mode, "attrs"))
 			rc = mode_attrs(arg_a);
+		else if (!strcmp(mode, "ls"))
+			rc = mode_ls(arg_a);
+		else if (!strcmp(mode, "dumpinode"))
+			rc = mode_dump_inode(strtoull(arg_a, NULL, 0), arg_b);
 		else
 			rc = mode_put(arg_a, arg_b);
 		ntfs_umount(vol, FALSE);

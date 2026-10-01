@@ -1,0 +1,200 @@
+﻿2026-10-01T08:09:58.6780495Z Current runner version: '2.337.0'
+2026-10-01T08:09:58.6804400Z ##[group]Runner Image Provisioner
+2026-10-01T08:09:58.6805310Z Hosted Compute Agent
+2026-10-01T08:09:58.6806137Z Version: 20260828.587
+2026-10-01T08:09:58.6806786Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+2026-10-01T08:09:58.6807647Z Build Date: 2026-08-28T16:44:25Z
+2026-10-01T08:09:58.6808464Z Worker ID: {ca3f20f5-3829-4477-827b-8021f713421c}
+2026-10-01T08:09:58.6809283Z Azure Region: eastus
+2026-10-01T08:09:58.6809911Z ##[endgroup]
+2026-10-01T08:09:58.6811582Z ##[group]Operating System
+2026-10-01T08:09:58.6812395Z Ubuntu
+2026-10-01T08:09:58.6812915Z 24.04.5
+2026-10-01T08:09:58.6813479Z LTS
+2026-10-01T08:09:58.6814000Z ##[endgroup]
+2026-10-01T08:09:58.6814536Z ##[group]Runner Image
+2026-10-01T08:09:58.6815219Z Image: ubuntu-24.04
+2026-10-01T08:09:58.6816272Z Version: 20260920.314.1
+2026-10-01T08:09:58.6817593Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260920.314/images/ubuntu/Ubuntu2404-Readme.md
+2026-10-01T08:09:58.6819289Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260920.314
+2026-10-01T08:09:58.6820349Z ##[endgroup]
+2026-10-01T08:09:58.6821622Z ##[group]GITHUB_TOKEN Permissions
+2026-10-01T08:09:58.6823742Z Contents: read
+2026-10-01T08:09:58.6824422Z Metadata: read
+2026-10-01T08:09:58.6825403Z Packages: read
+2026-10-01T08:09:58.6826301Z ##[endgroup]
+2026-10-01T08:09:58.6828672Z Secret source: Actions
+2026-10-01T08:09:58.6829614Z Cache mode: write
+2026-10-01T08:09:58.6830502Z Prepare workflow directory
+2026-10-01T08:09:58.7155004Z Prepare all required actions
+2026-10-01T08:09:58.7202735Z Getting action download info
+2026-10-01T08:09:58.9583322Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-10-01T08:09:59.1395582Z Complete job name: protocol
+2026-10-01T08:09:59.2311096Z ##[group]Run actions/checkout@v4
+2026-10-01T08:09:59.2312214Z with:
+2026-10-01T08:09:59.2312685Z   repository: xis3794/MirrorBox
+2026-10-01T08:09:59.2317096Z   token: ***
+2026-10-01T08:09:59.2317574Z   ssh-strict: true
+2026-10-01T08:09:59.2318031Z   ssh-user: git
+2026-10-01T08:09:59.2318499Z   persist-credentials: true
+2026-10-01T08:09:59.2319012Z   clean: true
+2026-10-01T08:09:59.2319477Z   sparse-checkout-cone-mode: true
+2026-10-01T08:09:59.2320015Z   fetch-depth: 1
+2026-10-01T08:09:59.2320463Z   fetch-tags: false
+2026-10-01T08:09:59.2320927Z   show-progress: true
+2026-10-01T08:09:59.2321392Z   lfs: false
+2026-10-01T08:09:59.2321832Z   submodules: false
+2026-10-01T08:09:59.2322300Z   set-safe-directory: true
+2026-10-01T08:09:59.2322827Z   allow-unsafe-pr-checkout: false
+2026-10-01T08:09:59.2323701Z ##[endgroup]
+2026-10-01T08:09:59.3342028Z Syncing repository: xis3794/MirrorBox
+2026-10-01T08:09:59.3344878Z ##[group]Getting Git version info
+2026-10-01T08:09:59.3346534Z Working directory is '/home/runner/work/MirrorBox/MirrorBox'
+2026-10-01T08:09:59.3348078Z [command]/usr/bin/git version
+2026-10-01T08:09:59.3423072Z git version 2.55.0
+2026-10-01T08:09:59.3450941Z ##[endgroup]
+2026-10-01T08:09:59.3467218Z Temporarily overriding HOME='/home/runner/work/_temp/db1d399c-0af1-4301-a8c6-a4617e2b8bc3' before making global git config changes
+2026-10-01T08:09:59.3469778Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-01T08:09:59.3472596Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/MirrorBox/MirrorBox
+2026-10-01T08:09:59.3523115Z Deleting the contents of '/home/runner/work/MirrorBox/MirrorBox'
+2026-10-01T08:09:59.3527533Z ##[group]Initializing the repository
+2026-10-01T08:09:59.3532576Z [command]/usr/bin/git init /home/runner/work/MirrorBox/MirrorBox
+2026-10-01T08:09:59.3633940Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-01T08:09:59.3635978Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-01T08:09:59.3637763Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-01T08:09:59.3639261Z hint: call:
+2026-10-01T08:09:59.3640240Z hint:
+2026-10-01T08:09:59.3640912Z hint: 	git config --global init.defaultBranch <name>
+2026-10-01T08:09:59.3642039Z hint:
+2026-10-01T08:09:59.3642735Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-01T08:09:59.3643726Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-01T08:09:59.3644479Z hint:
+2026-10-01T08:09:59.3644917Z hint: 	git branch -m <name>
+2026-10-01T08:09:59.3645405Z hint:
+2026-10-01T08:09:59.3646573Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-01T08:09:59.3648117Z Initialized empty Git repository in /home/runner/work/MirrorBox/MirrorBox/.git/
+2026-10-01T08:09:59.3650499Z [command]/usr/bin/git remote add origin https://github.com/xis3794/MirrorBox
+2026-10-01T08:09:59.3698664Z ##[endgroup]
+2026-10-01T08:09:59.3699655Z ##[group]Disabling automatic garbage collection
+2026-10-01T08:09:59.3702829Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-01T08:09:59.3734515Z ##[endgroup]
+2026-10-01T08:09:59.3736007Z ##[group]Setting up auth
+2026-10-01T08:09:59.3742996Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-01T08:09:59.3776514Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-01T08:09:59.4156875Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-01T08:09:59.4198332Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-01T08:09:59.4427674Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-01T08:09:59.4463171Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-01T08:09:59.4687848Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-01T08:09:59.4729741Z ##[endgroup]
+2026-10-01T08:09:59.4730670Z ##[group]Fetching the repository
+2026-10-01T08:09:59.4739886Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +78b2ee4e67689efa7ae0bd7cad39c50d38824484:refs/remotes/origin/main
+2026-10-01T08:09:59.7791461Z From https://github.com/xis3794/MirrorBox
+2026-10-01T08:09:59.7793201Z  * [new ref]         78b2ee4e67689efa7ae0bd7cad39c50d38824484 -> origin/main
+2026-10-01T08:09:59.7798263Z ##[endgroup]
+2026-10-01T08:09:59.7799407Z ##[group]Determining the checkout info
+2026-10-01T08:09:59.7801686Z ##[endgroup]
+2026-10-01T08:09:59.7808250Z [command]/usr/bin/git sparse-checkout disable
+2026-10-01T08:09:59.7906398Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-01T08:09:59.7939662Z ##[group]Checking out the ref
+2026-10-01T08:09:59.7978873Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-10-01T08:09:59.8354742Z Switched to a new branch 'main'
+2026-10-01T08:09:59.8360400Z branch 'main' set up to track 'origin/main'.
+2026-10-01T08:09:59.8368518Z ##[endgroup]
+2026-10-01T08:09:59.8412187Z [command]/usr/bin/git log -1 --format=%H
+2026-10-01T08:09:59.8438482Z 78b2ee4e67689efa7ae0bd7cad39c50d38824484
+2026-10-01T08:09:59.8667972Z ##[group]Run sudo apt-get update -qq
+2026-10-01T08:09:59.8668791Z [36;1msudo apt-get update -qq[0m
+2026-10-01T08:09:59.8669605Z [36;1msudo apt-get install -y -qq ntfs-3g ntfs-3g-dev gcc python3[0m
+2026-10-01T08:09:59.8931335Z shell: /usr/bin/bash -e {0}
+2026-10-01T08:09:59.8932037Z ##[endgroup]
+2026-10-01T08:10:06.0719195Z Selecting previously unselected package ntfs-3g-dev.
+2026-10-01T08:10:06.1045466Z (Reading database ... 
+2026-10-01T08:10:06.1046557Z (Reading database ... 5%
+2026-10-01T08:10:06.1046945Z (Reading database ... 10%
+2026-10-01T08:10:06.1047861Z (Reading database ... 15%
+2026-10-01T08:10:06.1048409Z (Reading database ... 20%
+2026-10-01T08:10:06.1048821Z (Reading database ... 25%
+2026-10-01T08:10:06.1049159Z (Reading database ... 30%
+2026-10-01T08:10:06.1049495Z (Reading database ... 35%
+2026-10-01T08:10:06.1049850Z (Reading database ... 40%
+2026-10-01T08:10:06.1050204Z (Reading database ... 45%
+2026-10-01T08:10:06.1050598Z (Reading database ... 50%
+2026-10-01T08:10:06.1100825Z (Reading database ... 55%
+2026-10-01T08:10:06.1999881Z (Reading database ... 60%
+2026-10-01T08:10:06.3868240Z (Reading database ... 65%
+2026-10-01T08:10:06.5918177Z (Reading database ... 70%
+2026-10-01T08:10:06.7444759Z (Reading database ... 75%
+2026-10-01T08:10:06.8949936Z (Reading database ... 80%
+2026-10-01T08:10:07.0441250Z (Reading database ... 85%
+2026-10-01T08:10:07.2026369Z (Reading database ... 90%
+2026-10-01T08:10:07.3443620Z (Reading database ... 95%
+2026-10-01T08:10:07.3444221Z (Reading database ... 100%
+2026-10-01T08:10:07.3446532Z (Reading database ... 202190 files and directories currently installed.)
+2026-10-01T08:10:07.3487245Z Preparing to unpack .../ntfs-3g-dev_1%3a2022.10.3-1.2ubuntu3.2_amd64.deb ...
+2026-10-01T08:10:07.3514688Z Unpacking ntfs-3g-dev (1:2022.10.3-1.2ubuntu3.2) ...
+2026-10-01T08:10:07.3983539Z Setting up ntfs-3g-dev (1:2022.10.3-1.2ubuntu3.2) ...
+2026-10-01T08:10:08.0235960Z 
+2026-10-01T08:10:08.0236959Z Running kernel seems to be up-to-date.
+2026-10-01T08:10:08.0237513Z 
+2026-10-01T08:10:08.0237721Z No services need to be restarted.
+2026-10-01T08:10:08.0238323Z 
+2026-10-01T08:10:08.0238785Z No containers need to be restarted.
+2026-10-01T08:10:08.0239121Z 
+2026-10-01T08:10:08.0239485Z No user sessions are running outdated binaries.
+2026-10-01T08:10:08.0239864Z 
+2026-10-01T08:10:08.0240296Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+2026-10-01T08:10:08.8526632Z ##[group]Run bash native/scripts/test-ntfs-window.sh "${RUNNER_TEMP}/mb-ntfs-window"
+2026-10-01T08:10:08.8527311Z [36;1mbash native/scripts/test-ntfs-window.sh "${RUNNER_TEMP}/mb-ntfs-window"[0m
+2026-10-01T08:10:08.8592950Z shell: /usr/bin/bash -e {0}
+2026-10-01T08:10:08.8593222Z ##[endgroup]
+2026-10-01T08:10:08.8728773Z [1;34m==[0m 1) 编译 mirrorbox-ntfs（链接 libntfs-3g）
+2026-10-01T08:10:09.3123204Z [1;34m==[0m 2) 造一个 2G 的 NTFS 卷并写入目录树
+2026-10-01T08:10:09.3804345Z [1;34m==[0m    DONE files=6 bytes=4062251 failures=0
+2026-10-01T08:10:09.3943331Z [1;34m==[0m 3) 稀疏窗口 + 按需补齐循环
+2026-10-01T08:10:09.3943900Z [1;34m==[0m    第 1 轮：补齐 0.00 MiB / 1 个区域
+2026-10-01T08:10:09.4034221Z [1;34m==[0m    第 2 轮：补齐 0.01 MiB / 2 个区域
+2026-10-01T08:10:09.4122859Z [1;34m==[0m    第 3 轮：补齐 0.01 MiB / 3 个区域
+2026-10-01T08:10:09.4211665Z [1;34m==[0m    第 4 轮：补齐 0.02 MiB / 4 个区域
+2026-10-01T08:10:09.4301291Z [1;34m==[0m    第 5 轮：补齐 0.02 MiB / 5 个区域
+2026-10-01T08:10:09.4392342Z [1;34m==[0m    第 6 轮：补齐 0.14 MiB / 6 个区域
+2026-10-01T08:10:09.4483810Z [1;34m==[0m    第 7 轮：补齐 0.15 MiB / 7 个区域
+2026-10-01T08:10:09.4573952Z [1;34m==[0m    第 8 轮：补齐 0.16 MiB / 8 个区域
+2026-10-01T08:10:09.4663476Z [1;34m==[0m    第 9 轮：补齐 0.16 MiB / 9 个区域
+2026-10-01T08:10:09.4759055Z [1;34m==[0m    第 10 轮：补齐 0.41 MiB / 10 个区域
+2026-10-01T08:10:09.4785116Z [1;34m==[0m    第 11 轮：成功
+2026-10-01T08:10:09.4785595Z [1;34m==[0m 4) 校验读出的 BCD 内容
+2026-10-01T08:10:09.4842459Z [1;34m==[0m    BCD 字节一致 ✓（补齐 0.41 MiB，窗口实占 424K）
+2026-10-01T08:10:09.4843547Z [1;34m==[0m 5) 校验 MAP（物理位置）+ 就地改写
+2026-10-01T08:10:09.4870593Z MAP 0 321650688 262144
+2026-10-01T08:10:09.5022574Z MAP 校验通过：1 段
+2026-10-01T08:10:09.5023251Z 已就地改写 disk_off=321651020（file_off=332）
+2026-10-01T08:10:09.5054416Z [1;34m==[0m 6) 用完整镜像确认就地改写生效
+2026-10-01T08:10:09.5084929Z DUMP Boot/BCD -> after.bcd (262144 bytes)
+2026-10-01T08:10:09.5085605Z MAP 0 321650688 262144
+2026-10-01T08:10:09.5099876Z -rw-r--r-- 1 runner runner 262144 Oct  1 08:10 after.bcd
+2026-10-01T08:10:09.5242132Z   完整镜像里现在是: '\\Device\\HarddiskVolume2'
+2026-10-01T08:10:09.5272379Z [1;34m==[0m 7) 常驻文件（数据存在 MFT 记录里）的 MAP 也要正确
+2026-10-01T08:10:09.5301668Z MAP 0 84336 23
+2026-10-01T08:10:09.5453615Z 常驻 MAP 校验通过：disk=84336 len=23
+2026-10-01T08:10:09.5483802Z [1;34m==[0m 8) desktop.ini 的 DOS 属性（Windows 里应是「隐藏+系统」，父目录带「系统」）
+2026-10-01T08:10:09.5497910Z ATTRS Windows/desktop.ini 0x00000026 hidden system
+2026-10-01T08:10:09.5541515Z ATTRS Windows 0x00000024 system
+2026-10-01T08:10:09.5571207Z ATTRS Windows/System32/kernel32.dll 0x00000020
+2026-10-01T08:10:09.5608074Z [1;34m==[0m 全部通过 ✓（11 轮，补齐 0.41 MiB）
+2026-10-01T08:10:09.5793298Z Post job cleanup.
+2026-10-01T08:10:09.6657386Z [command]/usr/bin/git version
+2026-10-01T08:10:09.6701975Z git version 2.55.0
+2026-10-01T08:10:09.6745576Z Temporarily overriding HOME='/home/runner/work/_temp/5261b8a8-f43e-4c73-bd7b-8eb0da5ed0af' before making global git config changes
+2026-10-01T08:10:09.6747307Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-01T08:10:09.6751546Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/MirrorBox/MirrorBox
+2026-10-01T08:10:09.6790063Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-01T08:10:09.6825064Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-01T08:10:09.7071408Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-01T08:10:09.7102417Z http.https://github.com/.extraheader
+2026-10-01T08:10:09.7114739Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-10-01T08:10:09.7153147Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-01T08:10:09.7446760Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-01T08:10:09.7470918Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-01T08:10:09.7860183Z Cleaning up orphan processes
+2026-10-01T08:10:09.8173396Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

@@ -17,7 +17,7 @@ WORK="${TMPDIR:-/tmp}/mb-extract-$$"
 mkdir -p "$WORK"
 WIN="$WORK/window.raw"
 REG="$WORK/regions.txt"
-MAX_ROUNDS=24
+MAX_ROUNDS="${MB_MAX_ROUNDS:-200}"
 
 if [[ -z "$TOOL" ]]; then
   for cand in "$HERE/../native/build/mirrorbox-ntfs" "$(command -v mirrorbox-ntfs || true)" /tmp/ntw2/mb-ntfs; do
@@ -31,10 +31,23 @@ truncate -s "$PART_SIZE" "$WIN"
 : > "$REG"
 total=0
 
+# 工具参数：默认 --dump；用 MB_TOOL_ARGS 可以换成 --ls 之类的诊断模式
+if [[ -n "${MB_TOOL_ARGS:-}" ]]; then
+  read -r -a TOOL_ARGS <<< "${MB_TOOL_ARGS}"
+else
+  TOOL_ARGS=( --dump "$GUEST" "$OUT" )
+fi
+
 for ((round = 1; round <= MAX_ROUNDS; round++)); do
-  out="$("$TOOL" "$WIN" --regions "$REG" --dump "$GUEST" "$OUT" 2>&1)"
+  out="$("$TOOL" "$WIN" --regions "$REG" "${TOOL_ARGS[@]}" 2>&1)"
   rc=$?
-  [[ $rc -eq 0 ]] && { echo "第 $round 轮读出 $GUEST（补齐 $(awk -v b=$total 'BEGIN{printf "%.2f", b/1048576}') MiB）" >&2; break; }
+  if [[ $rc -eq 0 ]]; then
+    if [[ -n "${MB_TOOL_ARGS:-}" ]]; then
+      echo "$out" | grep -E '^(LS|LSCOUNT|ATTRS)' || echo "$out" | tail -3
+    fi
+    echo "第 $round 轮完成（补齐 $(awk -v b=$total 'BEGIN{printf "%.2f", b/1048576}') MiB）" >&2
+    break
+  fi
   needs="$(echo "$out" | awk '/^NEED /{print $2" "$3}')"
   [[ -n "$needs" ]] || { echo "$out" | tail -5 >&2; echo "工具没有给出新的区域请求" >&2; exit 3; }
   spec=""

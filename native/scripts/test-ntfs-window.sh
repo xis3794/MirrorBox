@@ -61,6 +61,8 @@ head -c 1500000 /dev/urandom > src/Windows/System32/ntdll.dll
 head -c  300000 /dev/urandom > src/Windows/System32/ntoskrnl.exe
 # 一个很小的"常驻"文件：用来覆盖 MAP 的常驻分支（数据直接存在 MFT 记录里）
 printf 'MIRRORBOX-RESIDENT-DATA' > src/Windows/small.txt
+# desktop.ini：Windows 里是「隐藏+系统」，父目录应带「系统」属性（见 --attrs 检查）
+printf '[.ShellClassInfo]\nLocalizedResourceName=@%%SystemRoot%%\\\\system32\\\\shell32.dll,-21787\n' > src/Windows/desktop.ini
 "${TOOL}" "${IMG}" src > apply.log 2>&1 || { tail -5 apply.log; die "目录树写入失败"; }
 log "   $(tail -1 apply.log)"
 
@@ -177,5 +179,14 @@ with open(work + '/full.img', 'rb') as f:
 assert got == src[fo:fo + ln], '常驻 MAP 位置不正确: disk=%d len=%d' % (disk, ln)
 print('常驻 MAP 校验通过：disk=%d len=%d' % (disk, ln))
 PY
+
+log "8) desktop.ini 的 DOS 属性（Windows 里应是「隐藏+系统」，父目录带「系统」）"
+"${TOOL}" "${IMG}" --attrs 'Windows/desktop.ini' | tee attrs_file.txt
+grep -q 'hidden' attrs_file.txt || die "desktop.ini 没有 HIDDEN 属性"
+grep -q 'system' attrs_file.txt || die "desktop.ini 没有 SYSTEM 属性"
+"${TOOL}" "${IMG}" --attrs 'Windows' | tee attrs_dir.txt
+grep -q 'system' attrs_dir.txt || die "含 desktop.ini 的目录没有 SYSTEM 属性"
+"${TOOL}" "${IMG}" --attrs 'Windows/System32/kernel32.dll' | tee attrs_plain.txt
+if grep -q 'hidden' attrs_plain.txt; then die "普通文件不该带 HIDDEN 属性"; fi
 
 log "全部通过 ✓（${rounds} 轮，补齐 $(awk -v b="${materialized}" 'BEGIN{printf "%.2f", b/1048576}') MiB）"

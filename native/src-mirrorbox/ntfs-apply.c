@@ -55,6 +55,195 @@ static int quiet = 0;
 
 #define BUF_SIZE (1u << 20)
 
+/** 镜像文件的 fd（`--regions` 按需模式与卸载后的记录直写都用它）。 */
+static int dev_fd = -1;
+
+/* ------------------------------------------------------------------ DOS 文件属性 */
+
+/*
+ * Windows 里 `desktop.ini`、`Thumbs.db` 这类文件是「隐藏+系统」属性；Explorer 只有在
+ * **所在目录带「系统」属性** 时才会把它当成"文件夹视图配置"来解析。
+ *
+ * 我们自己的 NTFS 写入器原先完全不设 DOS 属性（wimlib 提取到暂存目录时也没法保留 ——
+ * Linux 文件系统表达不了），结果释放出来的 Windows 里 `desktop.ini` 变成**可见的普通文本文件**
+ * （容易被误双击打开成记事本），文件夹视图设置也不生效。所以这里补上最小的必要集合。
+ */
+#define MB_ATTR_READONLY 0x0001u
+#define MB_ATTR_HIDDEN   0x0002u
+#define MB_ATTR_SYSTEM   0x0004u
+
+#define SI_FILE_ATTRIBUTES 0x20 /* $STANDARD_INFORMATION 数据里 file_attributes 的偏移 */
+
+/* 定义在文件后面，这里先声明 */
+static ntfs_inode *resolve_path(const char *path);
+static s64 mft_record_disk_offset(u64 mft_no);
+
+static int name_is(const char *name, const char *lower)
+{
+	size_t i;
+
+	for (i = 0; name[i] && lower[i]; i++) {
+		char c = name[i];
+
+		if (c >= 'A' && c <= 'Z')
+			c = (char)(c - 'A' + 'a');
+		if (c != lower[i])
+			return 0;
+	}
+	return name[i] == '\0' && lower[i] == '\0';
+}
+
+/*
+ * 读/写 MFT 记录里 $STANDARD_INFORMATION 的 file_attributes。
+ *
+ * 不走库 API 是因为 libntfs-3g 没暴露"设置属性"的接口；记录里属性布局是固定的：
+ * $SI 是常驻属性，数据偏移 0x20 起的 4 字节就是 DOS 属性位。
+ */
+static u32 *mb_file_attributes_ptr(ntfs_inode *ni)
+{
+	u8 *m;
+	u16 ao;
+
+	if (!ni || !ni->mrec)
+		return NULL;
+	m = (u8 *)ni->mrec;
+	memcpy(&ao, m + 0x14, 2);
+	while ((u32)(ao + 24) <= vol->mft_record_size) {
+		u32 type, alen;
+		u8 nonres, namelen;
+
+		memcpy(&type, m + ao, 4);
+		memcpy(&alen, m + ao + 4, 4);
+		nonres = m[ao + 8];
+		namelen = m[ao + 9];
+		if (type == 0xffffffff || alen < 24)
+			break;
+		if (type == 0x10 && !nonres && namelen == 0) { /* $STANDARD_INFORMATION */
+			u16 voff;
+			memcpy(&voff, m + ao + 0x14, 2);
+			return (u32 *)(m + ao + voff + SI_FILE_ATTRIBUTES);
+		}
+		ao = (u16)(ao + alen);
+	}
+	return NULL;
+}
+
+/*
+ * 需要补 DOS 属性的「客户机路径」清单。
+ *
+ * 为什么不在写文件时顺手设：libntfs-3g 收尾（ntfs_inode_close / 卸载刷盘）会用自己的
+ * 副本覆盖记录，实测写进去的属性会丢。所以先收集，等整棵树写完、卸载之前统一重开 inode
+ * 再设一次。
+ */
+#define MB_ATTR_MAX 8192
+static char *mb_attr_paths[MB_ATTR_MAX];
+static u32 mb_attr_bits[MB_ATTR_MAX];
+static s64 mb_attr_rec_off[MB_ATTR_MAX];
+static s64 mb_attr_field_off[MB_ATTR_MAX];
+static int mb_attr_n;
+
+static void mb_attr_add(const char *guest, u32 bits)
+{
+	if (mb_attr_n >= MB_ATTR_MAX)
+		return;
+	mb_attr_paths[mb_attr_n] = strdup(guest);
+	mb_attr_bits[mb_attr_n] = bits;
+	mb_attr_n++;
+}
+
+static void mb_attr_resolve(void)
+{
+	int i;
+
+	for (i = 0; i < mb_attr_n; i++) {
+		const char *guest = mb_attr_paths[i];
+		ntfs_inode *ni;
+		u32 *p;
+
+		mb_attr_rec_off[i] = -1;
+		if (!guest)
+			continue;
+		ni = resolve_path(*guest ? guest : "/");
+		if (!ni) {
+			fprintf(stderr, "WARN cannot reopen %s for attributes: %s\n",
+				guest, strerror(errno));
+			continue;
+		}
+		p = mb_file_attributes_ptr(ni);
+		if (p) {
+			mb_attr_rec_off[i] = mft_record_disk_offset(ni->mft_no);
+			mb_attr_field_off[i] = (s64)((char *)p - (char *)ni->mrec);
+		}
+		ntfs_inode_close(ni);
+	}
+}
+
+/*
+ * 卸载**之后**再改磁盘上的记录。
+ *
+ * 不能借着库改：libntfs-3g 收尾（inode close / 卸载刷盘）会用它自己的副本覆盖 MFT 记录，
+ * 实测写进去的属性会被抹掉。而 `$STANDARD_INFORMATION` 里的这个字段位于记录前部、不受
+ * USA（最后两个字节）保护，所以直接 pwrite 一组小改动是安全且确定的。
+ */
+static void mb_attr_write_raw(void)
+{
+	int i;
+
+	for (i = 0; i < mb_attr_n; i++) {
+		s64 rec = mb_attr_rec_off[i];
+		u8 *buf;
+		u32 val;
+		s64 n;
+
+		if (rec < 0 || !mb_attr_paths[i])
+			continue;
+		buf = malloc(vol ? vol->mft_record_size : 1024);
+		if (!buf)
+			return;
+		n = pread(dev_fd, buf, vol->mft_record_size, rec);
+		if (n != (s64)vol->mft_record_size) {
+			fprintf(stderr, "WARN cannot read MFT record of %s: %s\n",
+				mb_attr_paths[i], strerror(errno));
+			free(buf);
+			continue;
+		}
+		memcpy(&val, buf + mb_attr_field_off[i], 4);
+		val |= mb_attr_bits[i];
+		memcpy(buf + mb_attr_field_off[i], &val, 4);
+		if (pwrite(dev_fd, buf, vol->mft_record_size, rec) != (s64)vol->mft_record_size)
+			fprintf(stderr, "WARN cannot write attributes of %s: %s\n",
+				mb_attr_paths[i], strerror(errno));
+		free(buf);
+	}
+}
+
+/** 读出 DOS 属性（`--attrs` 诊断模式用）。 */
+static int mode_attrs(const char *guest)
+{
+	ntfs_inode *ni = resolve_path(guest);
+	u32 *p;
+	u32 a;
+
+	if (!ni) {
+		fprintf(stderr, "ERR open %s: %s\n", guest, strerror(errno));
+		return 5;
+	}
+	p = mb_file_attributes_ptr(ni);
+	if (!p) {
+		fprintf(stderr, "ERR no $STANDARD_INFORMATION in %s\n", guest);
+		ntfs_inode_close(ni);
+		return 5;
+	}
+	a = *p;
+	printf("ATTRS %s 0x%08X%s%s%s%s\n", guest, a,
+	       (a & MB_ATTR_READONLY) ? " readonly" : "",
+	       (a & MB_ATTR_HIDDEN) ? " hidden" : "",
+	       (a & MB_ATTR_SYSTEM) ? " system" : "",
+	       (a & 0x10) ? " directory" : "");
+	ntfs_inode_close(ni);
+	return 0;
+}
+
 /* ------------------------------------------------------------------ 按需区域（window）模式 */
 
 #define MAX_RANGES 8192
@@ -71,7 +260,6 @@ static struct mb_range need[MAX_RANGES];
 static int need_n = 0;
 static s64 need_total = 0;
 static int regions_on = 0; /* 未给 --regions 时整卷可用（目录树写入模式） */
-static int dev_fd = -1;
 
 static int have_covers(s64 off, s64 len)
 {
@@ -429,6 +617,7 @@ static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path
 		failures++;
 	} else {
 		set_times(ni, path);
+		/* desktop.ini 的「隐藏+系统」属性由 walk() 记下来、整棵树写完统一补 */
 		files_written++;
 		bytes_written += (long long)off;
 		if (!quiet && (files_written % 500) == 0)
@@ -439,9 +628,11 @@ static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path
 	return bad ? -1 : 0;
 }
 
-static int walk(ntfs_inode *dir_ni, const char *src)
+static int walk(ntfs_inode *dir_ni, const char *src, const char *guest)
 {
 	DIR *d = opendir(src);
+	int has_desktop_ini = 0;
+
 	if (!d) {
 		fprintf(stderr, "ERR opendir %s: %s\n", src, strerror(errno));
 		failures++;
@@ -453,11 +644,17 @@ static int walk(ntfs_inode *dir_ni, const char *src)
 			continue;
 
 		char path[4096];
+		char child_guest[2048];
+
 		if (snprintf(path, sizeof(path), "%s/%s", src, e->d_name) >= (int)sizeof(path)) {
 			fprintf(stderr, "ERR path-too-long %s/%s\n", src, e->d_name);
 			failures++;
 			continue;
 		}
+		if (*guest)
+			snprintf(child_guest, sizeof(child_guest), "%s/%s", guest, e->d_name);
+		else
+			snprintf(child_guest, sizeof(child_guest), "%s", e->d_name);
 
 		struct stat st;
 		if (lstat(path, &st) != 0)
@@ -477,15 +674,21 @@ static int walk(ntfs_inode *dir_ni, const char *src)
 				failures++;
 				continue;
 			}
-			walk(sub, path);
+			walk(sub, path, child_guest);
 			set_times(sub, path);
 			ntfs_inode_close(sub);
 		} else if (S_ISREG(st.st_mode)) {
+			/* 记下来，等整棵树写完再统一补 DOS 属性（见 mb_attr_apply 的说明） */
+			if (name_is(e->d_name, "desktop.ini"))
+				has_desktop_ini = 1, mb_attr_add(child_guest, MB_ATTR_HIDDEN | MB_ATTR_SYSTEM);
 			write_one_file(dir_ni, e->d_name, path);
 		}
 		/* 符号链接/设备节点：Windows 镜像里基本用不到，直接跳过 */
 	}
 	closedir(d);
+	/* Explorer 只有在该目录带「系统」属性时才把 desktop.ini 当视图配置解析 */
+	if (has_desktop_ini)
+		mb_attr_add(guest, MB_ATTR_SYSTEM);
 	return 0;
 }
 
@@ -772,6 +975,9 @@ int main(int argc, char **argv)
 			mode = "put";
 			arg_a = argv[++i];
 			arg_b = argv[++i];
+		} else if (!strcmp(argv[i], "--attrs") && i + 1 < argc) {
+			mode = "attrs";
+			arg_a = argv[++i];
 		} else if (!image) {
 			image = argv[i];
 		} else if (!source) {
@@ -783,8 +989,9 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 			"usage: %s <ntfs-image> <source-dir> [--quiet]\n"
 			"       %s <ntfs-image> [--regions <file>] --dump <guest-path> <host-file>\n"
-			"       %s <ntfs-image> [--regions <file>] --put <host-file> <guest-path>\n",
-			argv[0], argv[0], argv[0]);
+			"       %s <ntfs-image> [--regions <file>] --put <host-file> <guest-path>\n"
+			"       %s <ntfs-image> --attrs <guest-path>\n",
+			argv[0], argv[0], argv[0], argv[0]);
 		return 2;
 	}
 
@@ -806,6 +1013,8 @@ int main(int argc, char **argv)
 	if (mode) {
 		if (!strcmp(mode, "dump"))
 			rc = mode_dump(arg_a, arg_b);
+		else if (!strcmp(mode, "attrs"))
+			rc = mode_attrs(arg_a);
 		else
 			rc = mode_put(arg_a, arg_b);
 		ntfs_umount(vol, FALSE);
@@ -820,7 +1029,9 @@ int main(int argc, char **argv)
 		goto done;
 	}
 
-	walk(root, source);
+	walk(root, source, "");
+	/* 整棵树写完了：先解析出需要补属性的记录的物理位置（卸载后再真正落盘，见下） */
+	mb_attr_resolve();
 	ntfs_inode_close(root);
 
 	/* force=FALSE：把元数据刷盘并清掉 dirty 标志，避免 Windows 首次挂载就 chkdsk */
@@ -828,6 +1039,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "ERR umount\n");
 		failures++;
 	}
+
+	/* 卸载完成后再改磁盘上的 MFT 记录（此时库不会再覆盖我们的写入） */
+	mb_attr_write_raw();
 
 	fprintf(stderr, "DONE files=%lld bytes=%lld failures=%d\n",
 		files_written, bytes_written, failures);

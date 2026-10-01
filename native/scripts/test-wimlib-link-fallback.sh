@@ -31,7 +31,7 @@ curl -sSL --max-time 300 -o wimlib.tar.gz "https://wimlib.net/downloads/wimlib-$
 tar xzf wimlib.tar.gz
 mv "wimlib-${WIMLIB_VERSION}" src
 python3 "$HERE/patch-wimlib-link-fallback.py" src
-grep -q mirrorbox_copy_file src/src/unix_apply.c || die "补丁没写进源码"
+grep -q mirrorbox_link_via_symlink src/src/unix_apply.c || die "补丁没写进源码"
 
 log "2) 编译主机版 wimlib"
 (cd src && ./configure --without-ntfs-3g --without-fuse > cfg.log 2>&1 \

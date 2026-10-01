@@ -64,7 +64,7 @@ printf 'MIRRORBOX-RESIDENT-DATA' > src/Windows/small.txt
 # desktop.ini：Windows 里是「隐藏+系统」，父目录应带「系统」属性（见 --attrs 检查）
 printf '[.ShellClassInfo]\nLocalizedResourceName=@%%SystemRoot%%\\system32\\shell32.dll,-21787\n' > src/Windows/desktop.ini
 # 指向普通文件的符号链接：wimlib 顶替硬链接的方式，写入器必须把它展开成真实文件
-ln -sfn System32/small.txt src/Windows/alias.txt
+ln -sfn small.txt src/Windows/alias.txt
 "${TOOL}" "${IMG}" src > apply.log 2>&1 || { tail -5 apply.log; die "目录树写入失败"; }
 log "   $(tail -1 apply.log)"
 

@@ -254,6 +254,22 @@ fun GuestFilesScreen(nav: Navigator, path: String) {
                             ?: "不可用（去「设置」开启「所有文件访问」后可用 /sdcard/Download/MirrorBox）",
                     )
                     Spacer(Modifier.height(8.dp))
+                    GlassButton("Windows 驱动库体检", enabled = !busy) {
+                        scope.launch {
+                            busy = true
+                            log = emptyList()
+                            val report = withContext(Dispatchers.IO) {
+                                GuestFsOps.auditWindowsRaw(context, active.rawPath) { append(it) }
+                            }
+                            status = if (report.ok) {
+                                "驱动库体检通过 ✓（NTFS 里的驱动文件不是 0 字节）"
+                            } else {
+                                "驱动库体检不通过 ✗ —— 看下面的工具输出，标 ✗ 的就是问题"
+                            }
+                            busy = false
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
                     GlassButton("复制出来", enabled = !busy && selected != null) {
                         val item = selected
                         if (item == null) {

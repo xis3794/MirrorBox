@@ -128,28 +128,8 @@ object GuestFsOps {
             return out.sortedWith(compareByDescending<Entry> { it.isDir }.thenBy { it.name.lowercase() })
         }
 
-        private suspend fun listNtfs(path: String, onLine: (String) -> Unit): List<Entry> {
-            val result = ToolRunner.run(
-                context, NativeTools.NTFSLS,
-                listOf("-l", "-p", normalise(path), rawPath),
-                onLine = onLine,
-            )
-            val out = ArrayList<Entry>()
-            for (line in result.lines) {
-                val trimmed = line.trim()
-                if (trimmed.isEmpty() || trimmed.startsWith("Volume") || trimmed.startsWith("$")) continue
-                val first = trimmed.firstOrNull() ?: continue
-                val isDir = first == 'd'
-                if (first !in "d-Dlf") continue
-                val parts = trimmed.split(Regex("\\s+"))
-                if (parts.size < 7) continue
-                val name = parts.last()
-                if (name == "." || name == "..") continue
-                val size = parts[4].toLongOrNull() ?: 0L
-                out.add(Entry(name, isDir, if (isDir) 0L else size, if (isDir) "目录" else Fmt.size(size)))
-            }
-            return out.sortedWith(compareByDescending<Entry> { it.isDir }.thenBy { it.name.lowercase() })
-        }
+        private suspend fun listNtfs(path: String, onLine: (String) -> Unit): List<Entry> =
+            GuestFsOps.listNtfsRaw(context, rawPath, normalise(path), onLine)
 
         // ---------------------------------------------------------------- mutations
 
@@ -292,5 +272,160 @@ object GuestFsOps {
         if (normalised.isEmpty() || normalised == "/") return "/"
         val cut = normalised.substringBeforeLast('/', "")
         return cut.ifEmpty { "/" }
+    }
+
+    // ---------------------------------------------------------------- NTFS 静态读取 / 体检
+
+    /**
+     * `ntfsls -F -l -p <dir> <raw>` 的一行长这样（大小右对齐 9 列，日期 4 段，最后是名字）：
+     *
+     * `       0 Oct  2 18:32 2026 $Extend/`
+     *
+     * 目录靠 `-F` 在名字末尾追加 `/` 来区分。旧版本按 `ls -l`（首列是模式字符）解析 NTFS，
+     * 于是每一行都被跳过 —— 界面上就显示"目录为空，或读取失败"。这就是"文件读不到"。
+     */
+    private val NTFS_LONG = Regex("^\\s*(\\d+)\\s+\\S+\\s+\\d+\\s+\\S+\\s+\\d+\\s+(.+?)\\s*$")
+
+    fun parseNtfsLong(line: String): Entry? {
+        val m = NTFS_LONG.matchEntire(line.trimEnd()) ?: return null
+        var name = m.groupValues[2].trim()
+        if (name.isEmpty() || name == "." || name == "..") return null
+        val isDir = name.endsWith("/")
+        if (isDir) name = name.dropLast(1).trim()
+        if (name.isEmpty()) return null
+        val size = m.groupValues[1].toLongOrNull() ?: 0L
+        return Entry(name, isDir, if (isDir) 0L else size, if (isDir) "目录" else Fmt.size(size))
+    }
+
+    /** 对任意 NTFS raw（镜像提取出来的分区 / 释放时的临时文件）列目录。 */
+    suspend fun listNtfsRaw(
+        context: Context,
+        rawPath: String,
+        path: String,
+        onLine: (String) -> Unit = {},
+    ): List<Entry> {
+        val result = ToolRunner.run(
+            context, NativeTools.NTFSLS,
+            listOf("-F", "-l", "-p", normalise(path), rawPath),
+            onLine = onLine,
+        )
+        val out = ArrayList<Entry>()
+        for (line in result.lines) parseNtfsLong(line)?.let { out.add(it) }
+        return out.sortedWith(compareByDescending<Entry> { it.isDir }.thenBy { it.name.lowercase() })
+    }
+
+    data class AuditReport(val ok: Boolean, val lines: List<String>) {
+        val text: String get() = lines.joinToString("\n")
+    }
+
+    /**
+     * Windows 驱动库体检。
+     *
+     * 直接对着（提取出来的分区 / 释放时的临时 NTFS）检查 in-box 驱动文件是不是 0 字节 ——
+     * 这正是"设备全都找不到驱动"的根因：硬链接回退失败时只留下了空文件，而释放流程却报成功。
+     */
+    suspend fun auditWindowsRaw(
+        context: Context,
+        rawPath: String,
+        onLog: (String) -> Unit = {},
+    ): AuditReport {
+        val lines = ArrayList<String>()
+        var ok = true
+        fun say(s: String) {
+            lines.add(s)
+            onLog(s)
+        }
+
+        if (NativeTools.resolve(context, NativeTools.NTFSLS) == null) {
+            say("（未内置 ntfsls，跳过驱动库体检）")
+            return AuditReport(true, lines)
+        }
+
+        suspend fun ls(dir: String): List<Entry> =
+            runCatching { listNtfsRaw(context, rawPath, dir) }.getOrDefault(emptyList())
+
+        // 1) 内核
+        val sys32 = ls("/Windows/System32")
+        val kernel = sys32.firstOrNull { it.name.equals("ntoskrnl.exe", ignoreCase = true) }
+        when {
+            kernel == null -> {
+                ok = false
+                say("✗ 找不到 Windows\\System32\\ntoskrnl.exe")
+            }
+            kernel.sizeBytes <= 0L -> {
+                ok = false
+                say("✗ ntoskrnl.exe 是 0 字节")
+            }
+            else -> say("✓ ntoskrnl.exe ${Fmt.size(kernel.sizeBytes)}")
+        }
+
+        // 2) Windows\inf —— in-box 驱动的 INF 全在这儿
+        val inf = ls("/Windows/inf")
+        val infFiles = inf.filter { it.name.lowercase().endsWith(".inf") }
+        val infZero = infFiles.filter { it.sizeBytes <= 0L }
+        when {
+            infFiles.isEmpty() -> {
+                ok = false
+                say("✗ Windows\\inf 读不到或没有 .inf（共 ${inf.size} 项）")
+            }
+            infZero.isNotEmpty() -> {
+                ok = false
+                say(
+                    "✗ Windows\\inf：${infFiles.size} 个 .inf，其中 ${infZero.size} 个是 0 字节（" +
+                        infZero.take(5).joinToString { it.name } + "）"
+                )
+            }
+            else -> say("✓ Windows\\inf：${infFiles.size} 个 .inf，全部非空")
+        }
+
+        // 3) System32\drivers
+        val drivers = ls("/Windows/System32/drivers")
+        val sys = drivers.filter { it.name.lowercase().endsWith(".sys") }
+        val sysZero = sys.filter { it.sizeBytes <= 0L }
+        when {
+            sys.isEmpty() -> {
+                ok = false
+                say("✗ Windows\\System32\\drivers 读不到或没有 .sys")
+            }
+            sysZero.isNotEmpty() -> {
+                ok = false
+                say(
+                    "✗ drivers：${sys.size} 个 .sys，其中 ${sysZero.size} 个是 0 字节（" +
+                        sysZero.take(5).joinToString { it.name } + "）"
+                )
+            }
+            else -> say("✓ drivers：${sys.size} 个 .sys，全部非空")
+        }
+
+        // 4) DriverStore：包数量 + 抽查关键 in-box 包的内容
+        val storeDir = "/Windows/System32/DriverStore/FileRepository"
+        val packages = ls(storeDir).filter { it.isDir }
+        if (packages.isEmpty()) {
+            ok = false
+            say("✗ $storeDir 读不到或为空")
+        } else {
+            say("✓ DriverStore：${packages.size} 个驱动包")
+            val wants = listOf(
+                "machine.inf", "mshdc.inf", "pci.inf", "disk.inf",
+                "usb.inf", "usbport.inf", "netrtl64.inf", "net8187.inf", "display.inf",
+            )
+            var bad = 0
+            for (want in wants) {
+                val pkg = packages.firstOrNull { it.name.lowercase().startsWith("${want}_") }
+                    ?: packages.firstOrNull { it.name.equals(want, ignoreCase = true) }
+                    ?: continue
+                val files = ls("$storeDir/${pkg.name}")
+                val zero = files.filter { !it.isDir && it.sizeBytes <= 0L }
+                if (zero.isNotEmpty()) {
+                    bad++
+                    say("  ✗ ${pkg.name}：${zero.size} 个 0 字节（${zero.take(3).joinToString { it.name }}）")
+                } else {
+                    say("  ✓ ${pkg.name}：${files.size} 项，全部非空")
+                }
+            }
+            if (bad > 0) ok = false
+        }
+
+        return AuditReport(ok, lines)
     }
 }

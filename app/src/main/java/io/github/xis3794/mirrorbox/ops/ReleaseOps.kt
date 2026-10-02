@@ -188,6 +188,16 @@ object ReleaseOps {
                     if (!apply.success) {
                         return Result(false, "写入 NTFS 失败（退出码 ${apply.exitCode}）：${apply.lines.lastOrNull().orEmpty()}")
                     }
+                    // 体检：以前硬链接回退失败会留下 0 字节的驱动文件，释放却报"成功"，
+                    // 结果 Windows 里所有设备都"找不到驱动程序"。现在写回镜像之前先验证。
+                    onLog("  ④ 驱动库体检（防止「释放成功、驱动全是0字节」的假成功）…")
+                    val audit = GuestFsOps.auditWindowsRaw(context, tmpRaw.absolutePath, onLog)
+                    if (!audit.ok) {
+                        return Result(
+                            false,
+                            "释放完成，但驱动库体检不通过（日志里标 ✗ 的项就是问题）；已中止，未写回镜像",
+                        )
+                    }
                 }
             }
 

@@ -73,15 +73,37 @@ LD_PRELOAD="$WORK/libnohardlink.so" "$WIM" apply out.wim 1 dst_fb > app_fb.log 2
     tail -20 app_fb.log
     die "link() 被拒时释放失败了"
   }
-[[ -L dst_fb/dir_b/payload.bin ]] || {
+# 哪一个变成符号链接取决于 wimlib 先释放哪一个别名，两个方向都要能过。
+alias_path=""
+real_path=""
+for p in dst_fb/dir_a/payload.bin dst_fb/dir_b/payload.bin; do
+  if [[ -L "$p" ]]; then alias_path="$p"; else real_path="$p"; fi
+done
+[[ -n "$alias_path" ]] || {
   tail -20 app_fb.log
-  die "回退后不是符号链接（是不是又退化成复制了？复制会吃掉几个 GB）"
+  die "回退后没有符号链接（是不是又退化成复制了？复制会吃掉几个 GB）"
 }
-link_size=$(stat -c %s dst_fb/dir_b/payload.bin)
-log "   别名是符号链接 ✓（只占 ${link_size} 字节；复制的话会占 $(stat -c %s tree/dir_a/payload.bin) 字节）"
+[[ -n "$real_path" ]] || die "没有落地成真实文件"
+link_size=$(stat -c %s "$alias_path")
+log "   别名是符号链接 ✓（${alias_path} -> $(readlink "$alias_path")，占 ${link_size} 字节；复制的话会占 $(stat -c %s tree/dir_a/payload.bin) 字节）"
 
-log "6) 符号链接指向的内容必须与源一致"
-cmp tree/dir_a/payload.bin dst_fb/dir_b/payload.bin || die "符号链接解析后的内容不一致"
-cmp tree/dir_a/payload.bin dst_fb/dir_a/payload.bin || die "第一个别名的内容也不对"
+log "6) 真实文件的内容必须与源一致"
+cmp tree/dir_a/payload.bin "$real_path" || die "真实文件的内容不对"
+
+log "7) 全链路：符号链接别名 → mirrorbox-ntfs 写进 NTFS → 读回必须非空且一致"
+# 这一步才是真正守住「DriverStore 里的 .inf/.sys 全变 0 字节 ⇒ Windows 里所有设备都找不到驱动」的东西。
+gcc -O2 -o mb-ntfs "$HERE/../src-mirrorbox/ntfs-apply.c" -lntfs-3g
+truncate -s 64M chain.ntfs
+mkntfs -F -Q -L CHAIN chain.ntfs > /dev/null 2>&1
+# 故意用「相对」源码目录：这时 wimlib 的链接目标是相对 cwd 的写法，写入器也必须能解析
+#（历史上这种链接会被当成断链跳过 —— 那正是 DriverStore 文件缺失的另一条路）。
+./mb-ntfs chain.ntfs dst_fb > chain.log 2>&1 || { tail -5 chain.log; die "写入 NTFS 失败"; }
+tail -1 chain.log
+grep -q 'links_expanded=1' chain.log || { tail -5 chain.log; die "写入器没有把符号链接别名展开（links_expanded != 1）"; }
+./mb-ntfs chain.ntfs --dump 'dir_a/payload.bin' alias.ntfs.bin > /dev/null 2>&1 || die "从 NTFS 读别名失败"
+./mb-ntfs chain.ntfs --dump 'dir_b/payload.bin' real.ntfs.bin > /dev/null 2>&1 || die "从 NTFS 读真实文件失败"
+[[ -s alias.ntfs.bin ]] || die "别名在 NTFS 里是 0 字节（就是 DriverStore 那个假成功的同型 bug）"
+cmp alias.ntfs.bin real.ntfs.bin || die "NTFS 里别名与真实文件内容不一致"
+cmp tree/dir_a/payload.bin alias.ntfs.bin || die "NTFS 里别名的内容与源文件不一致"
 
 log "全部通过 ✓"

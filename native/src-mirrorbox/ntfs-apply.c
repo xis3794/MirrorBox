@@ -55,6 +55,16 @@ static long long links_skipped = 0;  /* 指向目录的链接（junction）：�
 static int failures = 0;
 static int quiet = 0;
 
+/*
+ * 释放树的根目录（= 第二个命令行参数）。wimlib 的「link() 失败就建符号链接」回退有两种写法：
+ *   ① 绝对路径（App 传的是绝对 staging 目录时，正常情况）；
+ *   ② **相对于释放根目录**的路径（例如 `dst/Windows/inf/machine.inf`）。
+ * ② 这种从链接自己所在目录去解析是**断的**（内核按链接所在目录解析相对目标），
+ * 于是别名会被当成断链跳过 —— DriverStore 里的 .inf/.sys 就这么丢的。
+ * resolve_link_via_root() 用「根目录 + 目标」再兜一次。
+ */
+static const char *g_root = "";
+
 #define BUF_SIZE (1u << 20)
 
 /** 镜像文件的 fd（`--regions` 按需模式与卸载后的记录直写都用它）。 */
@@ -611,8 +621,55 @@ static void set_times(ntfs_inode *ni, const char *path)
 	times[3] = t;	/* last access */
 	(void)ntfs_inode_set_times(ni, (const char *)times, sizeof(times), 0);
 }
-
 /* ------------------------------------------------------------------ 目录树写入 */
+
+/**
+ * 再按「相对路径」解析一次符号链接目标。
+ *
+ * wimlib 的 link() 回退把别名做成符号链接时，目标就是「第一个别名的路径」。当 App 传的是
+ * **绝对** staging 目录时目标也是绝对路径（内核直接能解析）；一旦传的是相对目录（例如
+ * `dst_fb`），目标就变成相对 **调用方工作目录** 的路径 —— 这种链接从链接自己所在目录解析
+ * 是断的，会被当成断链跳过，于是 DriverStore 里的 .inf/.sys 就缺了。
+ * 这里依次试「cwd + 目标」「根目录的父目录 + 目标」「根目录 + 目标」，命中就返回 0。
+ */
+static int resolve_link_via_root(const char *linkpath, char *out, size_t outsz)
+{
+	char target[4096];
+	char cwd[4096];
+	char dir[4096];
+	ssize_t n;
+	size_t i;
+	struct stat st;
+
+	n = readlink(linkpath, target, sizeof(target) - 1);
+	if (n <= 0)
+		return -1;
+	target[n] = 0;
+	if (target[0] == '/') /* 绝对目标：stat(linkpath) 已经试过了 */
+		return -1;
+
+	if (getcwd(cwd, sizeof(cwd)) &&
+	    snprintf(out, outsz, "%s/%s", cwd, target) < (int)outsz &&
+	    stat(out, &st) == 0 && S_ISREG(st.st_mode))
+		return 0;
+
+	if (g_root && g_root[0]) {
+		snprintf(dir, sizeof(dir), "%s", g_root);
+		i = strlen(dir);
+		while (i > 1 && dir[i - 1] != '/')
+			i--;
+		if (i >= 1)
+			dir[i] = 0;
+		if (snprintf(out, outsz, "%s/%s", dir, target) < (int)outsz &&
+		    stat(out, &st) == 0 && S_ISREG(st.st_mode))
+			return 0;
+		if (snprintf(out, outsz, "%s/%s", g_root, target) < (int)outsz &&
+		    stat(out, &st) == 0 && S_ISREG(st.st_mode))
+			return 0;
+	}
+	return -1;
+}
+
 
 static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path)
 {
@@ -731,12 +788,18 @@ static int walk(ntfs_inode *dir_ni, const char *src, const char *guest)
 		 */
 		if (S_ISLNK(st.st_mode)) {
 			struct stat tst;
+			char alt[4096];
+			const char *real = NULL;
 
-			if (stat(path, &tst) == 0 && S_ISREG(tst.st_mode)) {
+			if (stat(path, &tst) == 0 && S_ISREG(tst.st_mode))
+				real = path;
+			else if (resolve_link_via_root(path, alt, sizeof(alt)) == 0)
+				real = alt;
+			if (real) {
 				if (name_is(e->d_name, "desktop.ini"))
 					has_desktop_ini = 1,
 					mb_attr_add(child_guest, MB_ATTR_HIDDEN | MB_ATTR_SYSTEM);
-				write_one_file(dir_ni, e->d_name, path);
+				write_one_file(dir_ni, e->d_name, real);
 				links_expanded++;
 			} else {
 				links_skipped++;
@@ -1176,6 +1239,7 @@ int main(int argc, char **argv)
 		goto done;
 	}
 
+	g_root = source;	/* wimlib 的相对链接目标要按这个根目录解析（见 resolve_link_via_root） */
 	walk(root, source, "");
 	/* 整棵树写完了：先解析出需要补属性的记录的物理位置（卸载后再真正落盘，见下） */
 	mb_attr_resolve();

@@ -42,7 +42,7 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc make python3 curl
+          sudo apt-get install -y -qq gcc make python3 curl ntfs-3g ntfs-3g-dev
 
-      - name: 验证 link() 失败时的复制回退
+      - name: 验证 link() 失败时的符号链接回退（含全链路写 NTFS 读回）
         run: bash native/scripts/test-wimlib-link-fallback.sh "${RUNNER_TEMP}/mb-wimlib-fallback"

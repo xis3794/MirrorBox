@@ -195,6 +195,9 @@ log "9) 符号链接必须被展开成真实文件（DriverStore 那种别名就
 grep -q 'links_expanded=1' apply.log || { tail -3 apply.log; die "写入器没有报告 links_expanded=1"; }
 "${TOOL}" "${IMG}" --dump 'Windows/alias.txt' alias.bin > /dev/null 2>&1 \
   || die "符号链接别名没有被写进镜像"
-cmp src/Windows/System32/small.txt alias.bin || die "展开后的内容与目标文件不一致"
+# 别名（src/Windows/alias.txt → small.txt）的内容必须和它指向的目标逐字节一致，
+# 而且不能是 0 字节 —— DriverStore 里那些“找不到驱动程序”就是这么来的。
+[[ -s alias.bin ]] || die "展开后的别名是 0 字节（DriverStore 假成功的同型 bug）"
+cmp src/Windows/small.txt alias.bin || die "展开后的内容与目标文件不一致"
 
 log "全部通过 ✓（${rounds} 轮，补齐 $(awk -v b="${materialized}" 'BEGIN{printf "%.2f", b/1048576}') MiB）"

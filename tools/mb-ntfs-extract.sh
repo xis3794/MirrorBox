@@ -43,7 +43,7 @@ for ((round = 1; round <= MAX_ROUNDS; round++)); do
   rc=$?
   if [[ $rc -eq 0 ]]; then
     if [[ -n "${MB_TOOL_ARGS:-}" ]]; then
-      echo "$out" | grep -E '^(LS|LSCOUNT|ATTRS|STAT|DATA)' || echo "$out" | tail -3
+      echo "$out" | grep -E '^(LS|LSCOUNT|ATTRS|STAT|DATA|ATTRTYPE|ATTRCOUNT)' || echo "$out" | tail -3
     fi
     echo "第 $round 轮完成（补齐 $(awk -v b=$total 'BEGIN{printf "%.2f", b/1048576}') MiB）" >&2
     break

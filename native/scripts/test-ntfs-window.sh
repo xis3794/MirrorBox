@@ -65,6 +65,12 @@ printf 'MIRRORBOX-RESIDENT-DATA' > src/Windows/small.txt
 printf '[.ShellClassInfo]\nLocalizedResourceName=@%%SystemRoot%%\\system32\\shell32.dll,-21787\n' > src/Windows/desktop.ini
 # 指向普通文件的符号链接：wimlib 顶替硬链接的方式，写入器必须把它展开成真实文件
 ln -sfn small.txt src/Windows/alias.txt
+# 大小写不同的同名目录：Windows 自带 Boot\，我们又要往里塞 boot\grub\grub.cfg。
+# NTFS 不区分大小写，写入器必须把它们合并成一个目录 —— 否则 GRUB 按名字（大小写不敏感）
+# 查找 /boot/grub/grub.cfg 时会命中 Boot\、在里面找不到配置，直接停在 grub> 提示符。
+mkdir -p src/Boot src/boot/grub
+printf 'BCD-CONTENT' > src/Boot/BCD
+printf '# grub' > src/boot/grub/grub.cfg
 "${TOOL}" "${IMG}" src > apply.log 2>&1 || { tail -5 apply.log; die "目录树写入失败"; }
 log "   $(tail -1 apply.log)"
 
@@ -199,5 +205,14 @@ grep -q 'links_expanded=1' apply.log || { tail -3 apply.log; die "写入器没�
 # 而且不能是 0 字节 —— DriverStore 里那些“找不到驱动程序”就是这么来的。
 [[ -s alias.bin ]] || die "展开后的别名是 0 字节（DriverStore 假成功的同型 bug）"
 cmp src/Windows/small.txt alias.bin || die "展开后的内容与目标文件不一致"
+
+log "10) 大小写不同的同名目录必须合并（NTFS/Windows 语义，否则 GRUB 找不到配置）"
+boot_dirs="$("${TOOL}" "${IMG}" --ls / | grep -ciE '^LS (boot|Boot)/ ' || true)"
+[[ "${boot_dirs}" = "1" ]] || {
+  "${TOOL}" "${IMG}" --ls / | grep -iE '^LS boot' || true
+  die "Boot/ 和 boot/ 同时存在（${boot_dirs} 个）——GRUB 会停在 grub> 提示符"
+}
+"${TOOL}" "${IMG}" --ls boot | grep -q 'BCD' || die "合并后的目录里丢了 Windows 的 BCD"
+"${TOOL}" "${IMG}" --ls boot/grub | grep -q 'grub.cfg' || die "合并后的目录里丢了我们的 grub.cfg"
 
 log "全部通过 ✓（${rounds} 轮，补齐 $(awk -v b="${materialized}" 'BEGIN{printf "%.2f", b/1048576}') MiB）"

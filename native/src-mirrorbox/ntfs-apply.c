@@ -285,6 +285,24 @@ static int mode_attrs(const char *guest)
 			ntfs_attr_close(na);
 		}
 	}
+	{
+		/* 列出这条 MFT 记录里的属性类型：看有没有 $ATTRIBUTE_LIST（GRUB 的 NTFS 驱动不支持它）
+		 * 以及是否出现了多个 $DATA。 */
+		ntfs_attr_search_ctx *ctx = ntfs_attr_get_search_ctx(ni, NULL);
+		if (ctx) {
+			int n = 0;
+			while (!ntfs_attr_lookup(AT_UNUSED, AT_UNNAMED, 0, 0, 0, NULL, 0, ctx)) {
+				if (n < 24)
+					printf("ATTRTYPE %s 0x%08X (%s)\n", guest,
+					       (unsigned)le32_to_cpu(ctx->attr->type),
+					       le32_to_cpu(ctx->attr->type) == AT_ATTRIBUTE_LIST
+						       ? "ATTRIBUTE_LIST" : "");
+				n++;
+			}
+			ntfs_attr_put_search_ctx(ctx);
+			printf("ATTRCOUNT %s %d\n", guest, n);
+		}
+	}
 	ntfs_inode_close(ni);
 	return 0;
 }
@@ -717,6 +735,60 @@ static int resolve_link_via_root(const char *linkpath, char *out, size_t outsz)
 }
 
 
+/* --------------------------------------------------- 大小写不敏感的子项查找 */
+
+struct ci_ctx {
+	const char *name;
+	ntfs_inode *found;
+	int is_dir;
+};
+
+static int ci_cb(void *dirent, const ntfschar *name, const int name_len,
+		 const int name_type, const s64 pos, const MFT_REF mref,
+		 const unsigned dt_type)
+{
+	struct ci_ctx *c = dirent;
+	char *utf8 = NULL;
+	int n, match = 0;
+
+	(void)pos;
+	if (name_type == FILE_NAME_DOS)
+		return 0;
+	n = ntfs_ucstombs(name, name_len, &utf8, 0);
+	if (n >= 0 && utf8) {
+		match = (strcasecmp(utf8, c->name) == 0);
+		free(utf8);
+	}
+	if (!match)
+		return 0;
+	c->found = ntfs_inode_open(vol, mref);
+	c->is_dir = (dt_type == NTFS_DT_DIR);
+	return 1; /* 找到就停 */
+}
+
+/**
+ * 找目录里的同名子项（**不区分大小写** —— 这才是 NTFS/Windows 的语义）。
+ * 返回已打开的 inode（调用方负责 ntfs_inode_close），没找到返回 NULL。
+ *
+ * 为什么必须有：我们的 walk() 原来无条件 ntfs_create()，于是一棵既有 Windows 自带
+ * `Boot\`、又被我们塞进 `boot\grub\grub.cfg` 的树，会在 NTFS 上留下**一对大小写不同的
+ * 同名目录**。Windows 勉强能用，但 GRUB 的 NTFS 驱动是按名字大小写不敏感查找的 ——
+ * 它会命中 `Boot`，在里面找不到 grub.cfg，于是停在 `grub>` 提示符（实测）。
+ */
+static ntfs_inode *find_child_ci(ntfs_inode *dir_ni, const char *name, int *is_dir)
+{
+	struct ci_ctx c;
+	s64 pos = 0;
+
+	c.name = name;
+	c.found = NULL;
+	c.is_dir = 0;
+	(void)ntfs_readdir(dir_ni, &pos, &c, ci_cb);
+	if (c.found && is_dir)
+		*is_dir = c.is_dir;
+	return c.found;
+}
+
 static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path)
 {
 	ntfschar *ucs = NULL;
@@ -725,7 +797,19 @@ static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path
 		failures++;
 		return -1;
 	}
-	ntfs_inode *ni = ntfs_create(dir_ni, 0, ucs, ulen, S_IFREG);
+	/* NTFS 不区分大小写：已经有同名（任意大小写）文件就直接覆盖它的数据，
+	 * 不要再建一个「同名但大小写不同」的文件 —— 那对 GRUB/chkdsk 都是坏结构。 */
+	int ci_is_dir = 0;
+	ntfs_inode *ni = find_child_ci(dir_ni, name, &ci_is_dir);
+	if (ni && ci_is_dir) {
+		fprintf(stderr, "ERR case-collision file-vs-dir %s\n", path);
+		ntfs_inode_close(ni);
+		free(ucs);
+		failures++;
+		return -1;
+	}
+	if (!ni)
+		ni = ntfs_create(dir_ni, 0, ucs, ulen, S_IFREG);
 	free(ucs);
 	if (!ni) {
 		fprintf(stderr, "ERR create-file %s: %s\n", path, strerror(errno));
@@ -740,6 +824,9 @@ static int write_one_file(ntfs_inode *dir_ni, const char *name, const char *path
 		ntfs_inode_close(ni);
 		return -1;
 	}
+
+	/* 覆盖已有文件时要先清空旧数据（同名文件复用那条路径） */
+	(void)ntfs_attr_truncate(na, 0);
 
 	FILE *f = fopen(path, "rb");
 	if (!f) {
@@ -857,7 +944,16 @@ static int walk(ntfs_inode *dir_ni, const char *src, const char *guest)
 				failures++;
 				continue;
 			}
-			ntfs_inode *sub = ntfs_create(dir_ni, 0, ucs, ulen, S_IFDIR);
+			/* 同名（任意大小写）目录已存在就复用它 —— NTFS 是大小写不敏感的，
+			 * 建出 Boot/ 和 boot/ 这种一对会让 GRUB（和 chkdsk）找不到东西。 */
+			int ci_dir = 0;
+			ntfs_inode *sub = find_child_ci(dir_ni, e->d_name, &ci_dir);
+			if (sub && !ci_dir) {
+				ntfs_inode_close(sub); /* 同名但是文件：交给下面的 create 报错 */
+				sub = NULL;
+			}
+			if (!sub)
+				sub = ntfs_create(dir_ni, 0, ucs, ulen, S_IFDIR);
 			free(ucs);
 			if (!sub) {
 				fprintf(stderr, "ERR mkdir %s: %s\n", path, strerror(errno));

@@ -69,7 +69,8 @@ ln -sfn small.txt src/Windows/alias.txt
 # NTFS 不区分大小写，写入器必须把它们合并成一个目录 —— 否则 GRUB 按名字（大小写不敏感）
 # 查找 /boot/grub/grub.cfg 时会命中 Boot\、在里面找不到配置，直接停在 grub> 提示符。
 mkdir -p src/Boot src/boot/grub
-printf 'BCD-CONTENT' > src/Boot/BCD
+# 注意别动 src/Boot/BCD（那是测试用的伪 BCD，第 5 步要拿它验证 MAP/就地改写）
+printf 'BCD-EXTRA' > src/Boot/BCD.MIRRORBOX
 printf '# grub' > src/boot/grub/grub.cfg
 "${TOOL}" "${IMG}" src > apply.log 2>&1 || { tail -5 apply.log; die "目录树写入失败"; }
 log "   $(tail -1 apply.log)"

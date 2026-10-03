@@ -194,8 +194,9 @@ build_ntfsprogs() {
   # The stamp lives outside tools/ on purpose: every entry in tools/ must be named lib*.so and be
   # an ELF file (see verify-package.sh).
   # 缓存戳里带上我们自己的工具源码哈希：改了 ntfs-apply.c 就自动重建，不用手动改版本号。
+  # 也要带上补丁脚本：补丁变了同样得重建（否则 CI 缓存会给你一个旧库）。
   local src_hash
-  src_hash="$(sha256sum "${NATIVE_DIR}/src-mirrorbox/ntfs-apply.c" | cut -c1-8)"
+  src_hash="$(cat "${NATIVE_DIR}/src-mirrorbox/ntfs-apply.c" "${SCRIPT_DIR}/patch-ntfs3g-name-namespace.py" | sha256sum | cut -c1-8)"
   if [[ -f "${OUT_DIR}/${ABI}/.ntfsprogs-ok-${src_hash}" ]]; then
     log "ntfsprogs already built (cached)"
     return 0
@@ -204,6 +205,11 @@ build_ntfsprogs() {
     fetch "https://github.com/tuxera/ntfs-3g/releases/download/${NTFS3G_VERSION}/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
   unpack "ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" "${BUILD_DIR}/ntfs-3g"
   cd "${BUILD_DIR}/ntfs-3g"
+  # 关键补丁：新建名字要用 Win32 命名空间。libntfs-3g 默认写 FILE_NAME_POSIX，
+  # 而 Windows 自建的名字是 FILE_NAME_WIN32；POSIX 名在 Win32 子集里是「半可见」的，
+  # 实测后果是 Win7 里 DriverStore 的 INF 全部报 0xE0000003「INF 语法无效」，
+  # 所有设备因此都「找不到驱动程序」（文件内容其实完全正确）。
+  python3 "${SCRIPT_DIR}/patch-ntfs3g-name-namespace.py" "${BUILD_DIR}/ntfs-3g"
   # ntfsprogs only: the FUSE mount helper is useless on unrooted Android.
   # The build must be STATIC. libntfs-3g/Makefile.am declares libntfs-3g.la as
   # noinst_LTLIBRARIES whenever ntfs-3g itself is disabled, so a shared build links the tools

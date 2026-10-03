@@ -252,6 +252,39 @@ static int mode_attrs(const char *guest)
 	       (a & MB_ATTR_HIDDEN) ? " hidden" : "",
 	       (a & MB_ATTR_SYSTEM) ? " system" : "",
 	       (a & 0x10) ? " directory" : "");
+	{
+		/* 大小 + 修改时间：用来判断"客户机到底有没有往这块盘上写过东西" */
+		struct timespec ts = ntfs2timespec(ni->last_data_change_time);
+		char when[64];
+		time_t t = ts.tv_sec;
+		struct tm *tm = gmtime(&t);
+		if (tm)
+			strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", tm);
+		else
+			snprintf(when, sizeof(when), "?");
+		printf("STAT %s size=%lld mtime=%lld (%s UTC)\n", guest,
+		       (long long)ni->data_size, (long long)ts.tv_sec, when);
+	}
+	{
+		/*
+		 * $DATA 的"有效数据长度"（VDL）。
+		 * Windows 只认 initialized_size 以内的数据，超出部分是 0；
+		 * 而 libntfs-3g 直接读簇，会忽略 VDL —— 于是"我们读得到、Windows 读到 0"。
+		 */
+		ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+		if (!na) {
+			printf("DATA %s <无 $DATA>\n", guest);
+		} else {
+			printf("DATA %s data_size=%lld init_size=%lld alloc=%lld flags=0x%08X%s%s%s\n",
+			       guest,
+			       (long long)na->data_size, (long long)na->initialized_size,
+			       (long long)na->allocated_size, (unsigned)na->data_flags,
+			       (na->data_flags & ATTR_IS_COMPRESSED) ? " compressed" : "",
+			       (na->data_flags & ATTR_IS_ENCRYPTED) ? " encrypted" : "",
+			       (na->data_flags & ATTR_IS_SPARSE) ? " sparse" : "");
+			ntfs_attr_close(na);
+		}
+	}
 	ntfs_inode_close(ni);
 	return 0;
 }
@@ -269,17 +302,30 @@ static int ls_cb(void *dirent, const ntfschar *name, const int name_len,
 	struct ls_ctx *c = dirent;
 	char *utf8 = NULL;
 	int n;
+	s64 dsize = -1;
 
 	(void)pos;
-	(void)mref;
-	if (name_type != FILE_NAME_POSIX) /* 只看长名（Win32），不列 8.3 */
+	if (name_type == FILE_NAME_DOS) /* 只有一个纯 8.3 名，没意义 */
 		return 0;
+	if (dt_type != NTFS_DT_DIR) {
+		/* 顺带报出 $DATA 大小：0 字节就是"驱动文件是空的"那种故障的直接证据 */
+		ntfs_inode *ino = ntfs_inode_open(vol, mref);
+		if (ino) {
+			dsize = ino->data_size;
+			ntfs_inode_close(ino);
+		}
+	}
 	n = ntfs_ucstombs(name, name_len, &utf8, 0);
 	if (n >= 0 && utf8) {
-		/* 一并打印完整的 MFT 引用（低 48 位是记录号，高 16 位是序列号）： */
-		/* 名字查找在个别卷上不可靠时，可以用 --dump-inode 直接读 */
-		printf("LS %s%s mft=%llu\n", utf8, (dt_type == NTFS_DT_DIR) ? "/" : "",
-		       (unsigned long long)mref);
+		/*
+		 * 一并打印：
+		 *   size=       $DATA 大小（0 字节就是"驱动文件是空的"）
+		 *   ns=         $FILE_NAME 命名空间（0=POSIX, 1=Win32, 2=DOS, 3=Win32&DOS）
+		 *               —— Windows 的 SetupAPI 只认 Win32 名；只有 POSIX 名会"文件在但读不了"
+		 *   mft=        完整 MFT 引用
+		 */
+		printf("LS %s%s size=%lld ns=%d mft=%llu\n", utf8, (dt_type == NTFS_DT_DIR) ? "/" : "",
+		       (long long)dsize, (int)name_type, (unsigned long long)mref);
 		free(utf8);
 		c->count++;
 	}

@@ -46,3 +46,18 @@ jobs:
 
       - name: 验证 link() 失败时的符号链接回退（含全链路写 NTFS 读回）
         run: bash native/scripts/test-wimlib-link-fallback.sh "${RUNNER_TEMP}/mb-wimlib-fallback"
+
+  win32-names:
+    name: 新建名字必须是 Win32 命名空间
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc make python3 curl ntfs-3g
+
+      - name: 验证写入 NTFS 的名字是 Win32 命名空间（ns=1，和 Windows 一致）
+        run: bash native/scripts/test-ntfs3g-win32-names.sh "${RUNNER_TEMP}/mb-win32names"

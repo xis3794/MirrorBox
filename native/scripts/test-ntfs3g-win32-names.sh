@@ -33,9 +33,17 @@ command -v python3 >/dev/null || die "缺 python3"
 rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
 
 log "1) 取 ntfs-3g ${NTFS3G_VERSION} 源码并打命名空间补丁"
-curl -sSL --max-time 300 -o n.tgz \
-  "https://github.com/tuxera/ntfs-3g/releases/download/${NTFS3G_VERSION}/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" \
-  || die "下载 ntfs-3g 失败"
+TUXERA="https://tuxera.com/opensource/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
+GHUB="https://github.com/tuxera/ntfs-3g/releases/download/${NTFS3G_VERSION}/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
+ok=0
+for url in "$TUXERA" "$GHUB"; do
+  if curl -sSL --max-time 300 -o n.tgz "$url" && gzip -t n.tgz 2>/dev/null; then
+    ok=1
+    break
+  fi
+  echo "   下载失败/不是 gzip：$url"
+done
+[[ "$ok" = 1 ]] || die "下载 ntfs-3g 失败（两个镜像都不可用）"
 tar xzf n.tgz
 SRC="$WORK/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}"
 [[ -d "$SRC" ]] || die "解包后找不到源码目录"

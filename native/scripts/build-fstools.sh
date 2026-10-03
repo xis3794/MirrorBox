@@ -223,6 +223,14 @@ build_ntfsprogs() {
     > "${LOG_DIR}/ntfs3g-configure.log" 2>&1 || { tail -40 "${LOG_DIR}/ntfs3g-configure.log" >&2; exit 1; }
   make -j"${JOBS}" > "${LOG_DIR}/ntfs3g-make.log" 2>&1 || { tail -60 "${LOG_DIR}/ntfs3g-make.log" >&2; exit 1; }
 
+  # 打包校验：编好的库里必须能找到命名空间补丁的标记字符串。
+  # 少了它就意味着 Windows 侧会出现「DriverStore 的 INF 全部 0xE0000003、所有设备找不到驱动」。
+  if ! grep -q mirrorbox_win32_file_name "${BUILD_DIR}/ntfs-3g/libntfs-3g/.libs/libntfs-3g.a"; then
+    warn "libntfs-3g 里没有 mirrorbox Win32 命名空间补丁的标记（补丁没生效？）"
+    exit 1
+  fi
+  log "libntfs-3g 命名空间补丁已生效（标记字符串在库内）"
+
   # package_tool() transparently picks the real binary out of .libs/ when libtool left a wrapper.
   for prog in mkntfs ntfsls ntfscat ntfscp ntfsfix ntfsinfo; do
     package_tool "${prog}" "${BUILD_DIR}/ntfs-3g/ntfsprogs/${prog}"

@@ -57,7 +57,7 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc make python3 curl ntfs-3g
+          sudo apt-get install -y -qq gcc make python3 curl ntfs-3g autoconf automake libtool pkg-config
 
       - name: 验证写入 NTFS 的名字是 Win32 命名空间（ns=1，和 Windows 一致）
         run: bash native/scripts/test-ntfs3g-win32-names.sh "${RUNNER_TEMP}/mb-win32names"

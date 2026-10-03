@@ -37,7 +37,12 @@ REPLACEMENT = (
     "\t * POSIX 命名的条目在 Win32 子集里是「半可见」的：Explorer/cmd 可能看得到，\n"
     "\t * 但 SetupAPI / 驱动安装读不了 —— 实测表现为 DriverStore 里的 INF 全部\n"
     "\t * 0xE0000003「INF 语法无效」，于是所有设备都「找不到驱动程序」。\n"
+    "\t *\n"
+    "\t * 下面这个字符串是给打包校验用的：native/scripts/build-fstools.sh 会在编好的\n"
+    "\t * 静态库里 grep 它，确保真正随 APK 发出的库确实带了本补丁。\n"
     "\t */\n"
+    "\tstatic const char mirrorbox_win32_file_name_marker[]\n"
+    "\t\t__attribute__((used)) = \"mirrorbox_win32_file_name\";\n"
     "\tfn->file_name_type = FILE_NAME_WIN32;\n"
 )
 

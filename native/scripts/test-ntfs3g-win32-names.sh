@@ -33,19 +33,32 @@ command -v python3 >/dev/null || die "缺 python3"
 rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
 
 log "1) 取 ntfs-3g ${NTFS3G_VERSION} 源码并打命名空间补丁"
-TUXERA="https://tuxera.com/opensource/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
-GHUB="https://github.com/tuxera/ntfs-3g/releases/download/${NTFS3G_VERSION}/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
-ok=0
-for url in "$TUXERA" "$GHUB"; do
-  if curl -sSL --max-time 300 -o n.tgz "$url" && gzip -t n.tgz 2>/dev/null; then
-    ok=1
+SRC=""
+TARBALL_NAMES=("ntfs-3g_ntfsprogs-${NTFS3G_VERSION}")
+GITHUB_TGZ="https://github.com/tuxera/ntfs-3g/releases/download/${NTFS3G_VERSION}/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz"
+for url in \
+  "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}.tgz" \
+  "$GITHUB_TGZ" \
+  "https://ghproxy.net/${GITHUB_TGZ}"; do
+  if curl -fsSL --max-time 300 -o n.tgz "$url" && gzip -t n.tgz 2>/dev/null; then
+    tar xzf n.tgz
+    SRC="$WORK/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}"
     break
   fi
-  echo "   下载失败/不是 gzip：$url"
+  echo "   镜像不可用：$url"
 done
-[[ "$ok" = 1 ]] || die "下载 ntfs-3g 失败（两个镜像都不可用）"
-tar xzf n.tgz
-SRC="$WORK/ntfs-3g_ntfsprogs-${NTFS3G_VERSION}"
+
+if [[ -z "$SRC" ]]; then
+  # 兜底：GitHub 的源码包（没有生成好的 configure，得先跑 autogen.sh）
+  echo "   回退到 GitHub 源码包（需要 autoconf / automake / libtool）"
+  curl -fsSL --max-time 300 -o n2.tgz \
+    "https://codeload.github.com/tuxera/ntfs-3g/tar.gz/refs/tags/${NTFS3G_VERSION}" \
+    || die "下载 ntfs-3g 源码包失败"
+  tar xzf n2.tgz
+  SRC="$WORK/ntfs-3g-${NTFS3G_VERSION}"
+  (cd "$SRC" && ./autogen.sh > autogen.log 2>&1) \
+    || { tail -20 "$SRC/autogen.log"; die "autogen.sh 失败（缺 autoconf/automake/libtool？）"; }
+fi
 [[ -d "$SRC" ]] || die "解包后找不到源码目录"
 python3 "$HERE/patch-ntfs3g-name-namespace.py" "$SRC"
 grep -q mirrorbox_win32_file_name "$SRC/libntfs-3g/dir.c" || die "补丁没写进源码"

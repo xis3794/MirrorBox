@@ -213,7 +213,11 @@ boot_dirs="$("${TOOL}" "${IMG}" --ls / | grep -ciE '^LS (boot|Boot)/ ' || true)"
   "${TOOL}" "${IMG}" --ls / | grep -iE '^LS boot' || true
   die "Boot/ 和 boot/ 同时存在（${boot_dirs} 个）——GRUB 会停在 grub> 提示符"
 }
-"${TOOL}" "${IMG}" --ls boot | grep -q 'BCD' || die "合并后的目录里丢了 Windows 的 BCD"
-"${TOOL}" "${IMG}" --ls boot/grub | grep -q 'grub.cfg' || die "合并后的目录里丢了我们的 grub.cfg"
+# 合并后目录名保持 WIM 里那个（Windows 的 Boot\），所以按实际名字查，别假定大小写
+merged="$("${TOOL}" "${IMG}" --ls / | grep -iE '^LS boot/ ' | head -1 | awk '{print $2}' | tr -d '/')"
+[[ -n "${merged}" ]] || die "根目录里找不到那个 boot 目录"
+log "   合并后的目录名：${merged}"
+"${TOOL}" "${IMG}" --ls "${merged}" | grep -q 'BCD' || die "合并后的目录里丢了 Windows 的 BCD"
+"${TOOL}" "${IMG}" --ls "${merged}/grub" | grep -q 'grub.cfg' || die "合并后的目录里丢了我们的 grub.cfg"
 
 log "全部通过 ✓（${rounds} 轮，补齐 $(awk -v b="${materialized}" 'BEGIN{printf "%.2f", b/1048576}') MiB）"

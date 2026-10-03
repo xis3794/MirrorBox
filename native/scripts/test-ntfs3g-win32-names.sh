@@ -94,9 +94,10 @@ grep -q '^LS Windows/ size=-1 ns=1 ' root.ls || die "新建目录不是 Win32 �
 grep -q '^LS disk.inf size=5 ns=1 ' deep.ls || die "深路径下的文件不是 Win32 命名空间"
 
 # "./" 和 "../" 是 readdir 合成出来的，本来就是 ns=0，不算数。
-if grep -E '^LS ' root.ls deep.ls | grep -v -E '^LS \.\.?/ ' | grep -q ' ns=0 '; then
+# 注意用 cat 而不是「grep 多文件」：后者会给每行加上 "文件名:" 前缀，^LS 锚点就失效了。
+if cat root.ls deep.ls | grep -v -E '^LS \.\.?/ ' | grep -q ' ns=0 '; then
   echo "--- 仍然出现 ns=0 的条目 ---"
-  grep -E '^LS ' root.ls deep.ls | grep -v -E '^LS \.\.?/ ' | grep ' ns=0 ' || true
+  cat root.ls deep.ls | grep -v -E '^LS \.\.?/ ' | grep ' ns=0 ' || true
   die "仍然写出了 POSIX 命名的条目（Windows 侧会「文件在但读不到」）"
 fi
 
